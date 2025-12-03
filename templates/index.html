@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Big Downloader - Téléchargeur Universel</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚀 BIG DOWNLOADER</h1>
+            <p class="subtitle">Téléchargeur Universel Multi-Plateformes</p>
+        </header>
+
+        <!-- Navigation par onglets -->
+        <div class="tabs">
+            <button class="tab-button active" data-tab="youtube">
+                📹 YouTube Vidéo
+            </button>
+            <button class="tab-button" data-tab="mp3">
+                🎵 MP3 Audio
+            </button>
+            <button class="tab-button" data-tab="social">
+                📱 Réseaux Sociaux
+            </button>
+        </div>
+
+        <!-- Contenu des onglets -->
+        <div class="tab-content">
+            <!-- ONGLET YOUTUBE -->
+            <div id="youtube-tab" class="tab-pane active">
+                <div class="info-box">
+                    <h3>📹 YouTube Vidéo Downloader</h3>
+                    <p>Téléchargez des vidéos YouTube en MP4 (jusqu'à 4K)</p>
+                    <ul>
+                        <li>✅ Qualité jusqu'à 4K (2160p)</li>
+                        <li>✅ Format MP4 compatible</li>
+                        <li>✅ Audio haute qualité inclus</li>
+                    </ul>
+                </div>
+
+                <div class="download-form">
+                    <input type="text" id="youtube-url" class="url-input"
+                           placeholder="Collez l'URL YouTube ici (ex: https://www.youtube.com/watch?v=...)">
+                    <button id="youtube-info-btn" class="btn btn-secondary">
+                        🔍 Infos
+                    </button>
+                    <button id="youtube-download-btn" class="btn btn-primary">
+                        ⬇️ Télécharger Vidéo
+                    </button>
+                </div>
+
+                <div id="youtube-info" class="video-info hidden"></div>
+                <div id="youtube-status" class="status-message"></div>
+            </div>
+
+            <!-- ONGLET MP3 -->
+            <div id="mp3-tab" class="tab-pane">
+                <div class="info-box">
+                    <h3>🎵 MP3 Audio Downloader</h3>
+                    <p>Téléchargez l'audio en MP3 depuis diverses plateformes</p>
+                    <ul>
+                        <li>✅ YouTube, SoundCloud, Vimeo</li>
+                        <li>✅ Format MP3 - 192 kbps</li>
+                        <li>✅ Métadonnées incluses</li>
+                    </ul>
+                </div>
+
+                <div class="download-form">
+                    <input type="text" id="mp3-url" class="url-input"
+                           placeholder="Collez l'URL ici (YouTube, SoundCloud, etc.)">
+                    <button id="mp3-info-btn" class="btn btn-secondary">
+                        🔍 Infos
+                    </button>
+                    <button id="mp3-download-btn" class="btn btn-primary">
+                        ⬇️ Télécharger MP3
+                    </button>
+                </div>
+
+                <div id="mp3-info" class="video-info hidden"></div>
+                <div id="mp3-status" class="status-message"></div>
+            </div>
+
+            <!-- ONGLET RÉSEAUX SOCIAUX -->
+            <div id="social-tab" class="tab-pane">
+                <div class="info-box">
+                    <h3>📱 Réseaux Sociaux Downloader</h3>
+                    <p>Téléchargez des médias depuis Instagram, TikTok, Twitter/X</p>
+                    <ul>
+                        <li>✅ Instagram (posts, reels)</li>
+                        <li>✅ TikTok (vidéos)</li>
+                        <li>✅ X/Twitter (vidéos, images)</li>
+                    </ul>
+                </div>
+
+                <div class="download-form">
+                    <input type="text" id="social-url" class="url-input"
+                           placeholder="Collez l'URL du post (Instagram, TikTok, X/Twitter)">
+                    <button id="social-info-btn" class="btn btn-secondary">
+                        🔍 Infos
+                    </button>
+                    <button id="social-download-btn" class="btn btn-primary">
+                        ⬇️ Télécharger
+                    </button>
+                </div>
+
+                <div id="social-info" class="video-info hidden"></div>
+                <div id="social-status" class="status-message"></div>
+            </div>
+        </div>
+
+        <!-- Section fichiers téléchargés -->
+        <div class="downloads-section">
+            <div class="section-header">
+                <h3>📁 Fichiers téléchargés</h3>
+                <button id="refresh-list-btn" class="btn btn-small">🔄 Actualiser</button>
+            </div>
+            <div id="downloads-list" class="downloads-list">
+                <p class="loading">Chargement...</p>
+            </div>
+        </div>
+    </div>
+
+    <footer>
+        <p>🔒 Sécurisé • Localhost uniquement • Taille max: 5GB</p>
+        <p>Made with ❤️ by Jeremy</p>
+    </footer>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

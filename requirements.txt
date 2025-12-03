@@ -1,0 +1,4 @@
+flask==3.0.0
+yt-dlp>=2024.12.6
+requests>=2.32.2
+colorama==0.4.6

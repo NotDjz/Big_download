@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Downloads
+downloads/
+downloads/YouTube/
+downloads/YouTube_MP3/
+downloads/Reseaux_Sociaux/
+*.mp4
+*.mp3
+*.webm
+*.mkv
+*.jpg
+*.png
+*.gif
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
