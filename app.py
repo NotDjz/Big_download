@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 import requests
+import subprocess
+import platform
 
 app = Flask(__name__)
 

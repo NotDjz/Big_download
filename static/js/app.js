@@ -308,6 +308,7 @@ async function loadDownloadsList() {
         files.forEach(file => {
             const size = formatFileSize(file.size);
             const category = file.category || 'Autre';
+
             html += `
                 <div class="download-item">
                     <div class="download-item-info">
