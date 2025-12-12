@@ -68,12 +68,12 @@
 run.bat
 ```
 
-Le serveur démarre sur **http://localhost:5000**
+Le serveur démarre sur **http://localhost:5555**
 
 ### Interface web
 
 1. Ouvrir votre navigateur
-2. Aller sur `http://localhost:5000`
+2. Aller sur `http://localhost:5555`
 3. Choisir l'onglet correspondant:
    - **YouTube Vidéo** pour les vidéos MP4
    - **MP3 Audio** pour l'audio
@@ -88,6 +88,58 @@ Le serveur démarre sur **http://localhost:5000**
 Tous les fichiers sont sauvegardés dans le dossier `downloads/`
 
 Vous pouvez les télécharger directement depuis l'interface web (section "Fichiers téléchargés")
+
+---
+
+## 🐳 Utilisation avec Docker
+
+### Prérequis Docker
+- **Docker** installé ([Installer Docker](https://docs.docker.com/get-docker/))
+- **Docker Compose** installé (inclus avec Docker Desktop)
+
+### Démarrage rapide
+
+1. **Construire et lancer le conteneur**
+   ```bash
+   docker-compose up -d
+   ```
+
+2. **Accéder à l'application**
+   - Ouvrir votre navigateur
+   - Aller sur `http://localhost:5555`
+
+3. **Voir les logs**
+   ```bash
+   docker-compose logs -f
+   ```
+
+4. **Arrêter le conteneur**
+   ```bash
+   docker-compose down
+   ```
+
+### Avantages Docker
+
+✅ **Pas d'installation manuelle** - FFmpeg et Python déjà inclus
+✅ **Isolation complète** - N'affecte pas votre système
+✅ **Fichiers persistants** - Les téléchargements sont sauvegardés dans `./downloads/`
+✅ **Portable** - Fonctionne sur Windows, Linux, MacOS
+
+### Commandes utiles
+
+```bash
+# Reconstruire l'image après une modification
+docker-compose up -d --build
+
+# Voir les conteneurs en cours
+docker ps
+
+# Arrêter et supprimer le conteneur
+docker-compose down
+
+# Supprimer aussi les volumes
+docker-compose down -v
+```
 
 ---
 
@@ -114,10 +166,13 @@ Big_download/
 │   └── js/
 │       └── app.js         # JavaScript
 ├── downloads/             # Fichiers téléchargés
-├── venv/                  # Environnement virtuel Python
+├── venv/                  # Environnement virtuel Python (Windows)
 ├── requirements.txt       # Dépendances Python
-├── install.bat           # Script d'installation
-├── run.bat               # Script de démarrage
+├── install.bat           # Script d'installation (Windows)
+├── run.bat               # Script de démarrage (Windows)
+├── Dockerfile            # Configuration Docker
+├── docker-compose.yml    # Orchestration Docker
+├── .dockerignore         # Fichiers exclus du build Docker
 └── README.md             # Ce fichier
 ```
 
@@ -129,6 +184,7 @@ Big_download/
 - **Téléchargement**: yt-dlp
 - **Frontend**: HTML5, CSS3, JavaScript (Vanilla)
 - **Conversion média**: FFmpeg
+- **Conteneurisation**: Docker (optionnel)
 
 ---
 

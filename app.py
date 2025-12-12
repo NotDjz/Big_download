@@ -517,4 +517,6 @@ if __name__ == '__main__':
     print("\n⌨️  Appuyez sur Ctrl+C pour arrêter le serveur")
     print("=" * 80)
 
-    app.run(debug=False, host='127.0.0.1', port=5555)
+    # Détection Docker : écouter sur 0.0.0.0 si dans Docker, sinon 127.0.0.1
+    host = '0.0.0.0' if os.environ.get('IN_DOCKER') else '127.0.0.1'
+    app.run(debug=False, host=host, port=5555)

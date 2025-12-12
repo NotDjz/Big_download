@@ -1,0 +1,31 @@
+# Environnement virtuel Python (Windows)
+venv/
+env/
+
+# Fichiers Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Git
+.git/
+.gitignore
+
+# Downloads (sera monté en volume)
+downloads/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Documentation
+CHANGELOG.md
+README.md
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
