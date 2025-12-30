@@ -9,6 +9,9 @@
 <body>
     <div class="container">
         <header>
+            <button id="theme-toggle" class="theme-toggle" title="Basculer le thème">
+                <span id="theme-icon">🌙</span>
+            </button>
             <h1>BIG DOWNLOADER</h1>
             <p class="subtitle">Téléchargeur Universel Multi-Plateformes</p>
         </header>
@@ -23,6 +26,9 @@
             </button>
             <button class="tab-button" data-tab="social">
                 📱 Réseaux Sociaux
+            </button>
+            <button class="tab-button" data-tab="stats">
+                📊 Statistiques
             </button>
         </div>
 
@@ -108,6 +114,96 @@
                 <div id="social-info" class="video-info hidden"></div>
                 <div id="social-status" class="status-message"></div>
             </div>
+
+            <!-- ONGLET STATISTIQUES -->
+            <div id="stats-tab" class="tab-pane">
+                <h2 class="stats-title">📊 Statistiques globales</h2>
+
+                <!-- Statistiques globales -->
+                <div id="stats-widget" class="stats-widget">
+                    <div class="stat-card">
+                        <div class="stat-icon">📊</div>
+                        <div class="stat-content">
+                            <div class="stat-label">Total fichiers</div>
+                            <div class="stat-value" id="stat-total-files">-</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">💾</div>
+                        <div class="stat-content">
+                            <div class="stat-label">Espace utilisé</div>
+                            <div class="stat-value" id="stat-total-size">-</div>
+                        </div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">🏆</div>
+                        <div class="stat-content">
+                            <div class="stat-label">Fichier le plus gros</div>
+                            <div class="stat-value" id="stat-largest-file">-</div>
+                            <div class="stat-subtext" id="stat-largest-category"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <h2 class="stats-title">📂 Par catégorie</h2>
+
+                <!-- Statistiques par catégorie -->
+                <div class="stats-categories">
+                    <!-- YouTube Vidéo -->
+                    <div class="category-stat">
+                        <div class="category-header">
+                            <span class="category-icon">📹</span>
+                            <h3>YouTube Vidéo</h3>
+                        </div>
+                        <div class="category-stats">
+                            <div class="category-stat-item">
+                                <span class="category-stat-label">Fichiers:</span>
+                                <span class="category-stat-value" id="stat-youtube-files">-</span>
+                            </div>
+                            <div class="category-stat-item">
+                                <span class="category-stat-label">Espace:</span>
+                                <span class="category-stat-value" id="stat-youtube-size">-</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- YouTube MP3 -->
+                    <div class="category-stat">
+                        <div class="category-header">
+                            <span class="category-icon">🎵</span>
+                            <h3>MP3 Audio</h3>
+                        </div>
+                        <div class="category-stats">
+                            <div class="category-stat-item">
+                                <span class="category-stat-label">Fichiers:</span>
+                                <span class="category-stat-value" id="stat-mp3-files">-</span>
+                            </div>
+                            <div class="category-stat-item">
+                                <span class="category-stat-label">Espace:</span>
+                                <span class="category-stat-value" id="stat-mp3-size">-</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Réseaux Sociaux -->
+                    <div class="category-stat">
+                        <div class="category-header">
+                            <span class="category-icon">📱</span>
+                            <h3>Réseaux Sociaux</h3>
+                        </div>
+                        <div class="category-stats">
+                            <div class="category-stat-item">
+                                <span class="category-stat-label">Fichiers:</span>
+                                <span class="category-stat-value" id="stat-social-files">-</span>
+                            </div>
+                            <div class="category-stat-item">
+                                <span class="category-stat-label">Espace:</span>
+                                <span class="category-stat-value" id="stat-social-size">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Section fichiers téléchargés -->
@@ -116,6 +212,7 @@
                 <h3>📁 Fichiers téléchargés</h3>
                 <button id="refresh-list-btn" class="btn btn-small">🔄 Actualiser</button>
             </div>
+
             <div id="downloads-list" class="downloads-list">
                 <p class="loading">Chargement...</p>
             </div>

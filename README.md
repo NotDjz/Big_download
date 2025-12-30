@@ -101,7 +101,7 @@ Vous pouvez les télécharger directement depuis l'interface web (section "Fichi
 
 1. **Construire et lancer le conteneur**
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
 
 2. **Accéder à l'application**
@@ -110,12 +110,12 @@ Vous pouvez les télécharger directement depuis l'interface web (section "Fichi
 
 3. **Voir les logs**
    ```bash
-   docker-compose logs -f
+   docker compose logs -f
    ```
 
 4. **Arrêter le conteneur**
    ```bash
-   docker-compose down
+   docker compose down
    ```
 
 ### Avantages Docker

@@ -456,6 +456,60 @@ def download_file(category, filename):
     return jsonify({'error': 'Fichier non trouvé'}), 404
 
 
+@app.route('/get-stats')
+def get_stats():
+    """Retourne les statistiques des téléchargements"""
+    total_files = 0
+    total_size = 0
+    largest_file = {'name': 'Aucun', 'size': 0, 'category': ''}
+
+    folders = [
+        (YOUTUBE_FOLDER, 'YouTube Vidéo'),
+        (YOUTUBE_MP3_FOLDER, 'YouTube MP3'),
+        (SOCIAL_FOLDER, 'Réseaux Sociaux')
+    ]
+
+    # Stats par catégorie
+    categories_stats = {
+        'youtube': {'files': 0, 'size': 0},
+        'mp3': {'files': 0, 'size': 0},
+        'social': {'files': 0, 'size': 0}
+    }
+
+    for folder, category in folders:
+        for file in folder.iterdir():
+            if file.is_file():
+                total_files += 1
+                file_size = file.stat().st_size
+                total_size += file_size
+
+                # Stats par catégorie
+                if folder == YOUTUBE_FOLDER:
+                    categories_stats['youtube']['files'] += 1
+                    categories_stats['youtube']['size'] += file_size
+                elif folder == YOUTUBE_MP3_FOLDER:
+                    categories_stats['mp3']['files'] += 1
+                    categories_stats['mp3']['size'] += file_size
+                elif folder == SOCIAL_FOLDER:
+                    categories_stats['social']['files'] += 1
+                    categories_stats['social']['size'] += file_size
+
+                # Vérifier si c'est le fichier le plus volumineux
+                if file_size > largest_file['size']:
+                    largest_file = {
+                        'name': file.name,
+                        'size': file_size,
+                        'category': category
+                    }
+
+    return jsonify({
+        'total_files': total_files,
+        'total_size': total_size,
+        'largest_file': largest_file,
+        'categories': categories_stats
+    })
+
+
 @app.route('/list-downloads')
 def list_downloads():
     """Liste tous les fichiers téléchargés avec leurs catégories"""

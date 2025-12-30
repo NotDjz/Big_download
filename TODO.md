@@ -39,9 +39,21 @@ Liste des fonctionnalités à implémenter pour améliorer l'application.
 
 ---
 
+### 4. Documentation et déploiement
+- [ ] Créer un fichier requirements.txt
+- [ ] Créer un README.md avec les deux méthodes d'installation (Docker et venv)
+- [ ] Documenter les commandes Docker
+- [ ] Documenter l'installation avec venv local
+- [ ] Ajouter des captures d'écran de l'interface
+
+**Difficulté:** ⭐ (Très facile)
+**Utilité:** ⭐⭐⭐⭐⭐ (Essentiel)
+
+---
+
 ## 🚀 Fonctionnalités Avancées
 
-### 4. Barre de progression en temps réel
+### 5. Barre de progression en temps réel
 - [ ] Implémenter WebSocket ou Server-Sent Events (SSE)
 - [ ] Afficher le pourcentage de progression
 - [ ] Afficher la vitesse de téléchargement (MB/s)
@@ -53,7 +65,7 @@ Liste des fonctionnalités à implémenter pour améliorer l'application.
 
 ---
 
-### 5. Choix de la qualité vidéo
+### 6. Choix de la qualité vidéo
 - [ ] Récupérer les formats disponibles avec `/get-info`
 - [ ] Afficher une liste déroulante (4K, 1440p, 1080p, 720p, 480p)
 - [ ] Permettre à l'utilisateur de choisir avant téléchargement
@@ -64,7 +76,7 @@ Liste des fonctionnalités à implémenter pour améliorer l'application.
 
 ---
 
-### 6. Queue de téléchargements
+### 7. Queue de téléchargements
 - [ ] Interface pour ajouter plusieurs URLs
 - [ ] File d'attente avec ordre de priorité
 - [ ] Télécharger automatiquement une par une
@@ -76,7 +88,7 @@ Liste des fonctionnalités à implémenter pour améliorer l'application.
 
 ---
 
-### 7. Téléchargement de playlists YouTube
+### 8. Téléchargement de playlists YouTube
 - [ ] Détecter automatiquement les URLs de playlists
 - [ ] Extraire la liste des vidéos avec yt-dlp
 - [ ] Afficher la liste avec preview et durée totale
@@ -88,7 +100,7 @@ Liste des fonctionnalités à implémenter pour améliorer l'application.
 
 ---
 
-### 8. Recherche et filtres
+### 9. Recherche et filtres
 - [ ] Barre de recherche dans les fichiers téléchargés
 - [ ] Recherche par nom de fichier
 - [ ] Filtrer par catégorie (YouTube Vidéo, MP3, Réseaux Sociaux)
@@ -100,7 +112,7 @@ Liste des fonctionnalités à implémenter pour améliorer l'application.
 
 ---
 
-### 9. Lecteur intégré
+### 10. Lecteur intégré
 - [ ] Intégrer un lecteur vidéo HTML5 (video.js ou plyr.js)
 - [ ] Bouton "▶️ Lire" à côté de chaque fichier
 - [ ] Modal avec lecteur pour vidéos/audios
@@ -111,7 +123,7 @@ Liste des fonctionnalités à implémenter pour améliorer l'application.
 
 ---
 
-### 10. Historique des téléchargements
+### 11. Historique des téléchargements
 - [ ] Base de données SQLite pour stocker l'historique
 - [ ] Logger chaque téléchargement (date, URL, statut, taille)
 - [ ] Page dédiée pour voir l'historique
@@ -123,7 +135,7 @@ Liste des fonctionnalités à implémenter pour améliorer l'application.
 
 ---
 
-### 11. Raccourcis clavier
+### 12. Raccourcis clavier
 - [ ] Détecter Ctrl+V / Cmd+V pour coller automatiquement dans l'input
 - [ ] Entrée pour lancer le téléchargement
 - [ ] Ctrl+D / Cmd+D pour basculer le dark mode
@@ -135,7 +147,7 @@ Liste des fonctionnalités à implémenter pour améliorer l'application.
 
 ---
 
-### 12. Notifications système
+### 13. Notifications système
 - [ ] Notification browser quand téléchargement terminé
 - [ ] Demander la permission de notification
 - [ ] Notification avec preview (titre, miniature)

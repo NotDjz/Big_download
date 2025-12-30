@@ -1,12 +1,54 @@
+// ==================== DARK MODE ====================
+// Charger le thème au démarrage
+(function() {
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+})();
+
 // Gestion des onglets
 document.addEventListener('DOMContentLoaded', () => {
+    initDarkMode();
     initTabs();
     initDownloadButtons();
     loadDownloadsList();
+    loadStats();
 
-    // Auto-refresh de la liste toutes les 10 secondes
-    setInterval(loadDownloadsList, 10000);
+    // Auto-refresh de la liste et des stats toutes les 10 secondes
+    setInterval(() => {
+        loadDownloadsList();
+        loadStats();
+    }, 10000);
 });
+
+function initDarkMode() {
+    const themeToggle = document.getElementById('theme-toggle');
+    const themeIcon = document.getElementById('theme-icon');
+    const currentTheme = localStorage.getItem('theme') || 'light';
+
+    // Mettre à jour l'icône selon le thème actuel
+    updateThemeIcon(currentTheme, themeIcon);
+
+    // Écouter le clic sur le bouton
+    themeToggle.addEventListener('click', () => {
+        const currentTheme = document.documentElement.getAttribute('data-theme');
+        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+
+        // Changer le thème
+        document.documentElement.setAttribute('data-theme', newTheme);
+        localStorage.setItem('theme', newTheme);
+
+        // Mettre à jour l'icône
+        updateThemeIcon(newTheme, themeIcon);
+    });
+}
+
+function updateThemeIcon(theme, iconElement) {
+    if (theme === 'dark') {
+        iconElement.textContent = '☀️';
+    } else {
+        iconElement.textContent = '🌙';
+    }
+}
 
 // ==================== ONGLETS ====================
 function initTabs() {
@@ -63,8 +105,11 @@ function initDownloadButtons() {
         if (url) downloadSocial(url);
     });
 
-    // Refresh liste
-    document.getElementById('refresh-list-btn').addEventListener('click', loadDownloadsList);
+    // Refresh liste et stats
+    document.getElementById('refresh-list-btn').addEventListener('click', () => {
+        loadDownloadsList();
+        loadStats();
+    });
 }
 
 // ==================== GET VIDEO INFO ====================
@@ -138,6 +183,7 @@ async function downloadYoutube(url) {
             }
             showStatus('youtube', message, 'success');
             loadDownloadsList();
+            loadStats();
         }
 
     } catch (error) {
@@ -177,6 +223,7 @@ async function downloadMP3(url) {
         } else {
             showStatus('mp3', `✅ ${data.message}`, 'success');
             loadDownloadsList();
+            loadStats();
         }
 
     } catch (error) {
@@ -216,6 +263,7 @@ async function downloadSocial(url) {
         } else {
             showStatus('social', `✅ ${data.message}`, 'success');
             loadDownloadsList();
+            loadStats();
         }
 
     } catch (error) {
@@ -341,4 +389,51 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// ==================== STATISTIQUES ====================
+async function loadStats() {
+    try {
+        const response = await fetch('/get-stats');
+        const stats = await response.json();
+
+        // Mettre à jour le nombre total de fichiers
+        document.getElementById('stat-total-files').textContent = stats.total_files;
+
+        // Mettre à jour l'espace utilisé
+        document.getElementById('stat-total-size').textContent = formatFileSize(stats.total_size);
+
+        // Mettre à jour le fichier le plus gros
+        if (stats.largest_file.size > 0) {
+            // Tronquer le nom si trop long
+            const fileName = stats.largest_file.name;
+            const displayName = fileName.length > 30 ? fileName.substring(0, 27) + '...' : fileName;
+
+            document.getElementById('stat-largest-file').textContent = displayName;
+            document.getElementById('stat-largest-file').title = fileName; // Tooltip pour le nom complet
+            document.getElementById('stat-largest-category').textContent =
+                `${formatFileSize(stats.largest_file.size)} • ${stats.largest_file.category}`;
+        } else {
+            document.getElementById('stat-largest-file').textContent = 'Aucun';
+            document.getElementById('stat-largest-category').textContent = '';
+        }
+
+        // Mettre à jour les stats par catégorie
+        if (stats.categories) {
+            // YouTube
+            document.getElementById('stat-youtube-files').textContent = stats.categories.youtube.files;
+            document.getElementById('stat-youtube-size').textContent = formatFileSize(stats.categories.youtube.size);
+
+            // MP3
+            document.getElementById('stat-mp3-files').textContent = stats.categories.mp3.files;
+            document.getElementById('stat-mp3-size').textContent = formatFileSize(stats.categories.mp3.size);
+
+            // Social
+            document.getElementById('stat-social-files').textContent = stats.categories.social.files;
+            document.getElementById('stat-social-size').textContent = formatFileSize(stats.categories.social.size);
+        }
+
+    } catch (error) {
+        console.error('Erreur lors du chargement des stats:', error);
+    }
 }
