@@ -16,6 +16,18 @@ if errorlevel 1 (
 echo [OK] Python detecte
 echo.
 
+REM Verification de FFmpeg
+ffmpeg -version >nul 2>&1
+if errorlevel 1 (
+    echo [ERREUR] FFmpeg n'est pas installe ou n'est pas dans le PATH
+    echo Veuillez installer FFmpeg depuis https://ffmpeg.org/download.html
+    echo et l'ajouter au PATH systeme.
+    pause
+    exit /b 1
+)
+echo [OK] FFmpeg detecte
+echo.
+
 REM Creation de l'environnement virtuel
 echo Creation de l'environnement virtuel...
 python -m venv venv

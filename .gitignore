@@ -10,16 +10,10 @@ ENV/
 
 # Downloads
 downloads/
-downloads/YouTube/
-downloads/YouTube_MP3/
-downloads/Reseaux_Sociaux/
-*.mp4
-*.mp3
-*.webm
-*.mkv
-*.jpg
-*.png
-*.gif
+
+# Cookies (sensitive)
+cookies.txt
+*_cookies.txt
 
 # IDE
 .vscode/
@@ -35,3 +29,10 @@ desktop.ini
 
 # Logs
 *.log
+
+# Test artifacts
+test_*.txt
+
+# Plugins/tools
+.claude/
+.superpowers/
