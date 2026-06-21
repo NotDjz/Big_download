@@ -1,110 +1,108 @@
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 import struct, io
 
+
 def create_icon_image(size):
-    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
+    """Reproduce the BIG DL logo: white download arrow on purple gradient rounded square."""
+    # Use 4x supersampling for clean anti-aliasing
+    ss = 4
+    hi = size * ss
+    img = Image.new('RGBA', (hi, hi), (0, 0, 0, 0))
 
-    # Rounded rectangle background - dark like the app
-    pad = int(size * 0.06)
-    radius = int(size * 0.18)
-    draw.rounded_rectangle([pad, pad, size - pad, size - pad],
-                           radius=radius, fill=(15, 15, 30, 255))
+    pad = max(ss, int(hi * 0.02))
+    radius = int(hi * 0.22)
 
-    # Gradient overlay (purple to blue) - draw horizontal bands
-    for y in range(pad + radius, size - pad - radius):
-        t = (y - pad) / (size - 2 * pad)
-        r = int(192 * (1 - t) + 96 * t)
-        g = int(132 * (1 - t) + 165 * t)
-        b = int(252 * (1 - t) + 250 * t)
-        alpha = int(40 + 25 * t)
-        draw.line([(pad + radius // 2, y), (size - pad - radius // 2, y)],
-                  fill=(r, g, b, alpha))
+    # Purple gradient background (#8B6EFF -> #6B45E8)
+    bg = Image.new('RGBA', (hi, hi), (0, 0, 0, 0))
+    bg_draw = ImageDraw.Draw(bg)
+    for y in range(hi):
+        t = y / max(1, hi - 1)
+        r = int(139 + (107 - 139) * t)
+        g = int(110 + (69 - 110) * t)
+        b = int(255 + (232 - 255) * t)
+        bg_draw.line([(0, y), (hi - 1, y)], fill=(r, g, b, 255))
 
-    # Text "BD" in bold white
-    font_size = int(size * 0.48)
-    try:
-        font = ImageFont.truetype("arialbd.ttf", font_size)
-    except OSError:
-        try:
-            font = ImageFont.truetype("arial.ttf", font_size)
-        except OSError:
-            font = ImageFont.load_default()
+    mask = Image.new('L', (hi, hi), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [pad, pad, hi - pad - 1, hi - pad - 1], radius=radius, fill=255)
+    bg.putalpha(mask)
+    img = Image.alpha_composite(img, bg)
 
-    text = "BD"
-    bbox = draw.textbbox((0, 0), text, font=font)
-    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    tx = (size - tw) // 2 - bbox[0]
-    ty = (size - th) // 2 - bbox[1] - int(size * 0.02)
+    # Draw download icon
+    layer = Image.new('RGBA', (hi, hi), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    s = hi / 68.0
+    white = (255, 255, 255, 255)
 
-    # Gradient text effect: draw with purple-blue gradient
-    text_layer = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    text_draw = ImageDraw.Draw(text_layer)
-    text_draw.text((tx, ty), text, fill=(255, 255, 255, 255), font=font)
+    # Vertical bar (pill): rect x=28 y=10 w=12 h=30 rx=6
+    draw.rounded_rectangle(
+        [28*s, 10*s, 40*s, 40*s], radius=max(1, int(6*s)), fill=white)
 
-    # Create gradient mask for text
-    gradient = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    grad_draw = ImageDraw.Draw(gradient)
-    for y in range(size):
-        t = y / size
-        r = int(192 * (1 - t) + 96 * t)
-        g = int(132 * (1 - t) + 165 * t)
-        b = int(252 * (1 - t) + 250 * t)
-        grad_draw.line([(0, y), (size, y)], fill=(r, g, b, 255))
+    # Triangle down: 34,52  18,34  50,34
+    draw.polygon([(34*s, 52*s), (18*s, 34*s), (50*s, 34*s)], fill=white)
 
-    # Composite: use text as mask over gradient
-    text_mask = text_layer.split()[3]
-    gradient_text = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    gradient_text.paste(gradient, mask=text_mask)
+    # Tray - draw as filled polygon (thick U-shape)
+    sw = 5 * s  # stroke width
+    hw = sw / 2
+    # Outer path (outside of the U)
+    # Inner path (inside of the U)
+    # Left arm outer: x=14-hw, from y=49 to y=58+hw (bottom)
+    # Bottom outer: from x=14-hw to x=54+hw, y=58+hw
+    # Right arm outer: x=54+hw, from y=58+hw to y=49
+    # Then inner path reverses
+    lo = 14 * s  # left x
+    ro = 54 * s  # right x
+    top_y = 49 * s
+    bot_y = 58 * s
+    cr = 4 * s  # corner radius
 
-    img = Image.alpha_composite(img, gradient_text)
+    # Draw the tray as two rounded rects minus the inside
+    # Simpler approach: draw thick lines with round caps
+    # Left vertical
+    draw.line([(lo, top_y), (lo, bot_y - cr)], fill=white, width=max(1, round(sw)))
+    # Bottom horizontal
+    draw.line([(lo + cr, bot_y), (ro - cr, bot_y)], fill=white, width=max(1, round(sw)))
+    # Right vertical
+    draw.line([(ro, bot_y - cr), (ro, top_y)], fill=white, width=max(1, round(sw)))
+    # Round corners at bottom-left and bottom-right
+    corner_w = max(1, round(sw))
+    # Bottom-left corner
+    draw.arc([lo - hw, bot_y - 2*cr, lo + 2*cr + hw, bot_y + hw],
+             start=90, end=180, fill=white, width=corner_w)
+    # Bottom-right corner
+    draw.arc([ro - 2*cr - hw, bot_y - 2*cr, ro + hw, bot_y + hw],
+             start=0, end=90, fill=white, width=corner_w)
+    # Round end caps on top of vertical lines
+    cap_r = sw / 2
+    draw.ellipse([lo - cap_r, top_y - cap_r, lo + cap_r, top_y + cap_r], fill=white)
+    draw.ellipse([ro - cap_r, top_y - cap_r, ro + cap_r, top_y + cap_r], fill=white)
 
-    # Small download arrow below text
-    arrow_size = int(size * 0.12)
-    cx = size // 2
-    cy = ty + th + int(size * 0.06)
-    arrow_draw = ImageDraw.Draw(img)
-    # Arrow shaft
-    shaft_w = max(2, int(size * 0.03))
-    arrow_draw.rectangle([cx - shaft_w, cy - arrow_size // 2, cx + shaft_w, cy + arrow_size // 3],
-                         fill=(96, 165, 250, 200))
-    # Arrow head
-    arrow_draw.polygon([
-        (cx - arrow_size // 2, cy + arrow_size // 4),
-        (cx + arrow_size // 2, cy + arrow_size // 4),
-        (cx, cy + arrow_size),
-    ], fill=(96, 165, 250, 200))
+    img = Image.alpha_composite(img, layer)
 
+    # Downsample with high-quality filter
+    img = img.resize((size, size), Image.LANCZOS)
     return img
 
 
 def save_ico(images, path):
-    """Save multiple PIL images as a .ico file."""
     ico_buf = io.BytesIO()
-    # ICO header: reserved(2), type=1(2), count(2)
     ico_buf.write(struct.pack('<HHH', 0, 1, len(images)))
-
     data_offset = 6 + 16 * len(images)
     entries = []
     png_datas = []
-
-    for img in images:
-        png_buf = io.BytesIO()
-        img.save(png_buf, format='PNG')
-        png_data = png_buf.getvalue()
-        png_datas.append(png_data)
-
-        w = img.width if img.width < 256 else 0
-        h = img.height if img.height < 256 else 0
-        entry = struct.pack('<BBBBHHII', w, h, 0, 0, 1, 32, len(png_data), data_offset)
-        entries.append(entry)
-        data_offset += len(png_data)
-
-    for entry in entries:
-        ico_buf.write(entry)
-    for png_data in png_datas:
-        ico_buf.write(png_data)
-
+    for im in images:
+        buf = io.BytesIO()
+        im.save(buf, format='PNG')
+        data = buf.getvalue()
+        png_datas.append(data)
+        w = im.width if im.width < 256 else 0
+        h = im.height if im.height < 256 else 0
+        entries.append(struct.pack('<BBBBHHII', w, h, 0, 0, 1, 32, len(data), data_offset))
+        data_offset += len(data)
+    for e in entries:
+        ico_buf.write(e)
+    for d in png_datas:
+        ico_buf.write(d)
     with open(path, 'wb') as f:
         f.write(ico_buf.getvalue())
 
@@ -113,5 +111,5 @@ if __name__ == '__main__':
     sizes = [16, 32, 48, 64, 128, 256]
     images = [create_icon_image(s) for s in sizes]
     save_ico(images, 'icon.ico')
-    images[4].save('icon.png')  # 128px for pywebview
+    images[4].save('icon.png')
     print(f"icon.ico and icon.png created ({len(sizes)} sizes)")
