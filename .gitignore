@@ -10,10 +10,18 @@ ENV/
 
 # Downloads
 downloads/
+temp_uploads/
 
 # Cookies (sensitive)
 cookies.txt
 *_cookies.txt
+
+# Build
+dist/
+build/
+*.spec
+ffmpeg.exe
+ffprobe.exe
 
 # IDE
 .vscode/

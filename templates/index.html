@@ -14,53 +14,114 @@
             <div class="tagline">Colle ton lien, c'est tout.</div>
         </header>
 
-        <!-- Search -->
-        <div class="search-zone">
-            <div class="search-bar">
-                <input type="text" id="url-input" class="search-input"
-                       placeholder="Colle un lien YouTube, Instagram, TikTok, X..."
-                       autocomplete="off" spellcheck="false">
-                <div id="platform-badge" class="platform-badge hidden"></div>
-                <button id="go-btn" class="go-btn">GO</button>
-            </div>
-            <div class="supported-platforms">
-                <span>YouTube</span>
-                <span>Instagram</span>
-                <span>TikTok</span>
-                <span>X</span>
-                <span>SoundCloud</span>
-            </div>
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab active" data-tab="download">Telecharger</button>
+            <button class="tab" data-tab="cut">Decouper</button>
         </div>
 
-        <!-- Result (inline, hidden by default) -->
-        <div id="result-zone" class="result-zone hidden">
-            <div class="result-card">
-                <div class="result-thumb" id="result-thumb">
-                    <span class="thumb-play">&#9654;</span>
+        <!-- ==================== TAB: DOWNLOAD ==================== -->
+        <div id="tab-download" class="tab-content">
+            <!-- Search -->
+            <div class="search-zone">
+                <div class="search-bar">
+                    <input type="text" id="url-input" class="search-input"
+                           placeholder="Colle un lien YouTube, Instagram, TikTok, X..."
+                           autocomplete="off" spellcheck="false">
+                    <div id="platform-badge" class="platform-badge hidden"></div>
+                    <button id="go-btn" class="go-btn">GO</button>
                 </div>
-                <div class="result-info">
-                    <div class="result-title" id="result-title"></div>
-                    <div class="result-meta" id="result-meta"></div>
-                    <div class="result-formats" id="result-formats"></div>
+                <div class="supported-platforms">
+                    <span>YouTube</span>
+                    <span>Instagram</span>
+                    <span>TikTok</span>
+                    <span>X</span>
+                    <span>SoundCloud</span>
                 </div>
             </div>
+
+            <!-- Result (inline, hidden by default) -->
+            <div id="result-zone" class="result-zone hidden">
+                <div class="result-card">
+                    <div class="result-thumb" id="result-thumb">
+                        <span class="thumb-play">&#9654;</span>
+                    </div>
+                    <div class="result-info">
+                        <div class="result-title" id="result-title"></div>
+                        <div class="result-meta" id="result-meta"></div>
+                        <div class="result-formats" id="result-formats"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Progress -->
+            <div id="progress-zone" class="progress-zone hidden">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <div class="progress-info">
+                    <span id="progress-status">Telechargement...</span>
+                    <span id="progress-percent">0%</span>
+                    <span id="progress-speed"></span>
+                    <span id="progress-eta"></span>
+                </div>
+            </div>
+
+            <!-- Status message -->
+            <div id="status-msg" class="status-msg hidden"></div>
         </div>
 
-        <!-- Progress -->
-        <div id="progress-zone" class="progress-zone hidden">
-            <div class="progress-bar">
-                <div class="progress-fill" id="progress-fill"></div>
+        <!-- ==================== TAB: CUT ==================== -->
+        <div id="tab-cut" class="tab-content hidden">
+            <!-- Upload zone -->
+            <div id="cut-upload-zone" class="cut-upload-zone">
+                <div class="cut-dropzone" id="cut-dropzone">
+                    <div class="cut-dropzone-icon">&#9986;</div>
+                    <div class="cut-dropzone-text">Glisse un fichier ici</div>
+                    <div class="cut-dropzone-sub">ou clique pour choisir (MP4, MP3, MKV, WAV...)</div>
+                    <input type="file" id="cut-file-input" accept="video/*,audio/*,.mp3,.mp4,.mkv,.webm,.m4a,.wav,.flac,.ogg,.avi,.mov" hidden>
+                </div>
             </div>
-            <div class="progress-info">
-                <span id="progress-status">Telechargement...</span>
-                <span id="progress-percent">0%</span>
-                <span id="progress-speed"></span>
-                <span id="progress-eta"></span>
+
+            <!-- Cut editor (hidden until file loaded) -->
+            <div id="cut-editor" class="cut-editor hidden">
+                <div class="cut-preview">
+                    <div id="cut-preview-container" class="cut-preview-container"></div>
+                    <div class="cut-preview-controls">
+                        <button id="cut-play-btn" class="player-btn">&#9654;</button>
+                        <span id="cut-current-time" class="cut-time-display">0:00</span>
+                    </div>
+                </div>
+
+                <!-- Range slider -->
+                <div class="cut-range-zone">
+                    <div class="cut-range-track" id="cut-range-track">
+                        <div class="cut-range-selected" id="cut-range-selected"></div>
+                        <div class="cut-range-handle cut-handle-start" id="cut-handle-start"></div>
+                        <div class="cut-range-handle cut-handle-end" id="cut-handle-end"></div>
+                        <div class="cut-range-playhead" id="cut-playhead"></div>
+                    </div>
+                    <div class="cut-range-labels">
+                        <span id="cut-label-start">0:00</span>
+                        <span id="cut-label-duration"></span>
+                        <span id="cut-label-end">0:00</span>
+                    </div>
+                </div>
+
+                <!-- Cut info + actions -->
+                <div class="cut-actions">
+                    <div class="cut-file-info">
+                        <span id="cut-filename"></span>
+                        <span id="cut-filesize"></span>
+                    </div>
+                    <div class="cut-btns">
+                        <button id="cut-reset-btn" class="cut-reset-btn">Changer de fichier</button>
+                        <button id="cut-do-btn" class="trim-cut-btn">Couper</button>
+                    </div>
+                </div>
+                <div id="cut-status" class="trim-status hidden"></div>
             </div>
         </div>
-
-        <!-- Status message -->
-        <div id="status-msg" class="status-msg hidden"></div>
 
         <!-- Downloads list -->
         <div class="downloads-zone">
@@ -101,6 +162,28 @@
             <div class="modal-info">
                 <div class="modal-title" id="modal-title"></div>
                 <div class="modal-meta" id="modal-meta"></div>
+            </div>
+            <div id="trim-zone" class="trim-zone hidden">
+                <div class="trim-controls">
+                    <button id="trim-toggle-btn" class="trim-toggle-btn" title="Outil de decoupe">&#9986; Decouper</button>
+                    <div id="trim-panel" class="trim-panel hidden">
+                        <div class="trim-inputs">
+                            <div class="trim-field">
+                                <label>Debut</label>
+                                <input type="text" id="trim-start" class="trim-input" placeholder="0:00" value="0:00">
+                                <button class="trim-set-btn" id="trim-set-start" title="Position actuelle">&#9664;</button>
+                            </div>
+                            <div class="trim-field">
+                                <label>Fin</label>
+                                <input type="text" id="trim-end" class="trim-input" placeholder="0:00">
+                                <button class="trim-set-btn" id="trim-set-end" title="Position actuelle">&#9664;</button>
+                            </div>
+                            <span id="trim-duration" class="trim-duration"></span>
+                            <button id="trim-cut-btn" class="trim-cut-btn">Couper</button>
+                        </div>
+                        <div id="trim-status" class="trim-status hidden"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

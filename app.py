@@ -15,8 +15,26 @@ import subprocess
 import platform
 from PIL import Image
 import shutil
+import sys
+import webbrowser
 
-app = Flask(__name__)
+if getattr(sys, 'frozen', False):
+    BUNDLE_DIR = Path(sys._MEIPASS)
+    BASE_DIR = Path(sys.executable).parent
+else:
+    BUNDLE_DIR = Path(__file__).parent
+    BASE_DIR = BUNDLE_DIR
+
+app = Flask(__name__,
+            template_folder=str(BUNDLE_DIR / "templates"),
+            static_folder=str(BUNDLE_DIR / "static"))
+app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2 GB
+
+
+@app.errorhandler(413)
+def request_entity_too_large(e):
+    return jsonify({'error': 'Fichier trop volumineux (max 2 GB)'}), 413
+
 
 # Logging structuré
 logging.basicConfig(
@@ -33,8 +51,14 @@ download_progress = {}
 MAX_VIDEO_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
 DOWNLOAD_TIMEOUT = 30 * 60  # 30 minutes max par téléchargement
 MAX_DOWNLOADS_PER_MINUTE = 10
-BASE_DIR = Path(__file__).parent
 DOWNLOAD_FOLDER = BASE_DIR / "downloads"
+
+if getattr(sys, 'frozen', False) and platform.system() == 'Windows':
+    FFMPEG_PATH = str(BUNDLE_DIR / "ffmpeg.exe")
+    FFPROBE_PATH = str(BUNDLE_DIR / "ffprobe.exe")
+else:
+    FFMPEG_PATH = "ffmpeg"
+    FFPROBE_PATH = "ffprobe"
 DOWNLOAD_FOLDER.mkdir(exist_ok=True)
 
 # Rate limiting
@@ -56,6 +80,16 @@ LEGACY_FOLDERS = [
     DOWNLOAD_FOLDER / "YouTube_MP3",
     DOWNLOAD_FOLDER / "Reseaux_Sociaux",
 ]
+
+
+def _next_versioned_name(folder, stem, ext):
+    """Trouve le prochain nom disponible: stem_v2.ext, stem_v3.ext, etc."""
+    version = 2
+    while True:
+        name = f"{stem}_v{version}{ext}"
+        if not (folder / name).exists():
+            return name
+        version += 1
 
 
 def sanitize_filename(filename):
@@ -234,6 +268,9 @@ def _build_ydl_opts(download_type, url, quality, progress_hook):
         'retries': 10,
     }
 
+    if getattr(sys, 'frozen', False):
+        ydl_opts['ffmpeg_location'] = str(BUNDLE_DIR)
+
     cookies_file = _get_cookies_file()
     if cookies_file:
         ydl_opts['cookiefile'] = cookies_file
@@ -255,7 +292,7 @@ def _build_ydl_opts(download_type, url, quality, progress_hook):
 
 def _get_cookies_file():
     """Retourne le chemin du fichier cookies s'il existe"""
-    base = Path(__file__).parent
+    base = BASE_DIR
     for name in ('cookies.txt', 'www.instagram.com_cookies.txt'):
         path = base / name
         if path.exists():
@@ -984,6 +1021,222 @@ def stream_file(category, filename):
     return jsonify({'error': 'Fichier non trouve'}), 404
 
 
+@app.route('/cut-video', methods=['POST'])
+def cut_video():
+    """Decoupe une video/audio entre deux timestamps avec FFmpeg"""
+    data = request.get_json()
+    category = data.get('category')
+    filename = data.get('filename')
+    start = data.get('start', 0)
+    end = data.get('end')
+
+    if not category or not filename or end is None:
+        return jsonify({'error': 'Parametres manquants'}), 400
+
+    if end <= start:
+        return jsonify({'error': 'Le temps de fin doit etre apres le debut'}), 400
+
+    safe_filename = sanitize_filename(filename)
+    folder = _resolve_category_folder(category)
+    if not folder:
+        return jsonify({'error': 'Categorie invalide'}), 400
+
+    file_path = (folder / safe_filename).resolve()
+    if not str(file_path).startswith(str(folder.resolve())):
+        return jsonify({'error': 'Acces refuse'}), 403
+    if not file_path.exists():
+        return jsonify({'error': 'Fichier non trouve'}), 404
+
+    stem = file_path.stem
+    ext = file_path.suffix
+    out_name = _next_versioned_name(folder, stem, ext)
+    out_path = folder / out_name
+
+    try:
+        cmd = [
+            FFMPEG_PATH, '-y',
+            '-i', str(file_path),
+            '-ss', str(start),
+            '-to', str(end),
+            '-avoid_negative_ts', 'make_zero',
+            str(out_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            if out_path.exists():
+                out_path.unlink()
+            log.error(f"FFmpeg cut failed: {result.stderr[-500:]}")
+            return jsonify({'error': 'Erreur FFmpeg lors de la decoupe'}), 500
+
+        log.info(f"Video cut: {safe_filename} -> {out_name}")
+        return jsonify({
+            'success': True,
+            'filename': out_path.name,
+            'size': out_path.stat().st_size,
+            'message': f'Decoupe terminee: {out_path.name}',
+        })
+    except subprocess.TimeoutExpired:
+        if out_path.exists():
+            out_path.unlink()
+        return jsonify({'error': 'Timeout: decoupe trop longue'}), 500
+    except FileNotFoundError:
+        return jsonify({'error': 'FFmpeg non trouve. Verifiez qu\'il est installe et dans le PATH.'}), 500
+    except Exception as e:
+        if out_path.exists():
+            out_path.unlink()
+        log.error(f"Cut error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+TEMP_FOLDER = BASE_DIR / "temp_uploads"
+TEMP_FOLDER.mkdir(exist_ok=True)
+
+
+@app.route('/upload-for-cut', methods=['POST'])
+def upload_for_cut():
+    """Upload un fichier pour le pre-visualiser avant decoupe"""
+    if 'file' not in request.files:
+        return jsonify({'error': 'Aucun fichier envoye'}), 400
+
+    file = request.files['file']
+    if not file.filename:
+        return jsonify({'error': 'Nom de fichier vide'}), 400
+
+    ext = Path(file.filename).suffix.lower()
+    if ext not in ('.mp3', '.mp4', '.mkv', '.webm', '.m4a', '.wav', '.flac', '.ogg', '.avi', '.mov'):
+        return jsonify({'error': f'Format non supporte: {ext}'}), 400
+
+    safe_name = sanitize_filename(file.filename)
+    temp_id = str(uuid.uuid4())[:8]
+    temp_name = f"{temp_id}_{safe_name}"
+    temp_path = TEMP_FOLDER / temp_name
+
+    file.save(str(temp_path))
+
+    file_size = temp_path.stat().st_size
+    duration = _get_media_duration(temp_path)
+
+    if duration <= 0:
+        temp_path.unlink(missing_ok=True)
+        return jsonify({'error': 'Impossible de lire la duree du fichier. Format non supporte ou fichier corrompu.'}), 400
+
+    log.info(f"Upload for cut: {safe_name} ({file_size / 1024 / 1024:.1f} MB)")
+    return jsonify({
+        'success': True,
+        'temp_name': temp_name,
+        'original_name': file.filename,
+        'size': file_size,
+        'duration': duration,
+    })
+
+
+@app.route('/stream-temp/<filename>')
+def stream_temp(filename):
+    """Sert un fichier temporaire pour la pre-visualisation"""
+    safe_name = sanitize_filename(filename)
+    file_path = (TEMP_FOLDER / safe_name).resolve()
+    if not str(file_path).startswith(str(TEMP_FOLDER.resolve())):
+        return jsonify({'error': 'Acces refuse'}), 403
+    if not file_path.exists():
+        return jsonify({'error': 'Fichier non trouve'}), 404
+    return send_file(file_path)
+
+
+@app.route('/cut-uploaded', methods=['POST'])
+def cut_uploaded():
+    """Decoupe un fichier uploade et renvoie le resultat"""
+    data = request.get_json()
+    temp_name = data.get('temp_name')
+    start = data.get('start', 0)
+    end = data.get('end')
+    original_name = data.get('original_name', '')
+
+    if not temp_name or end is None:
+        return jsonify({'error': 'Parametres manquants'}), 400
+    try:
+        start = float(start)
+        end = float(end)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Les temps doivent etre des nombres'}), 400
+    if end <= start:
+        return jsonify({'error': 'Le temps de fin doit etre apres le debut'}), 400
+
+    safe_temp = sanitize_filename(temp_name)
+    temp_path = (TEMP_FOLDER / safe_temp).resolve()
+    if not str(temp_path).startswith(str(TEMP_FOLDER.resolve())):
+        return jsonify({'error': 'Acces refuse'}), 403
+    if not temp_path.exists():
+        return jsonify({'error': 'Fichier source non trouve'}), 404
+
+    stem = Path(original_name).stem if original_name else temp_path.stem
+    stem = sanitize_filename(stem)
+    ext = temp_path.suffix
+
+    audio_exts = ('.mp3', '.m4a', '.wav', '.flac', '.ogg')
+    dest_folder = MUSIC_FOLDER if ext in audio_exts else VIDEOS_FOLDER
+    out_name = _next_versioned_name(dest_folder, stem, ext)
+    out_path = dest_folder / out_name
+
+    try:
+        cmd = [
+            FFMPEG_PATH, '-y',
+            '-i', str(temp_path),
+            '-ss', str(start),
+            '-to', str(end),
+            '-avoid_negative_ts', 'make_zero',
+            str(out_path),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if result.returncode != 0:
+            if out_path.exists():
+                out_path.unlink()
+            log.error(f"FFmpeg cut failed: {result.stderr[-500:]}")
+            return jsonify({'error': 'Erreur FFmpeg lors de la decoupe'}), 500
+
+        temp_path.unlink(missing_ok=True)
+
+        log.info(f"Cut upload: {out_name} ({out_path.stat().st_size / 1024 / 1024:.1f} MB)")
+        return jsonify({
+            'success': True,
+            'filename': out_name,
+            'size': out_path.stat().st_size,
+            'download_url': f'/downloads/{dest_folder.name}/{out_name}',
+            'message': f'Decoupe terminee: {out_name}',
+        })
+    except subprocess.TimeoutExpired:
+        if out_path.exists():
+            out_path.unlink()
+        temp_path.unlink(missing_ok=True)
+        return jsonify({'error': 'Timeout: decoupe trop longue'}), 500
+    except FileNotFoundError:
+        temp_path.unlink(missing_ok=True)
+        return jsonify({'error': 'FFmpeg non trouve'}), 500
+    except Exception as e:
+        if out_path.exists():
+            out_path.unlink()
+        temp_path.unlink(missing_ok=True)
+        log.error(f"Cut upload error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+def _get_media_duration(filepath):
+    """Obtient la duree d'un fichier media via ffprobe"""
+    try:
+        cmd = [
+            FFPROBE_PATH, '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            str(filepath),
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            return float(data.get('format', {}).get('duration', 0))
+    except Exception:
+        pass
+    return 0
+
+
 @app.route('/open-folder')
 def open_folder():
     """Ouvre le dossier de telechargements dans l'explorateur"""
@@ -1067,4 +1320,5 @@ if __name__ == '__main__':
     print("=" * 80)
 
     _migrate_legacy_folders()
+    threading.Timer(1.5, lambda: webbrowser.open("http://localhost:5555")).start()
     app.run(debug=False, host='127.0.0.1', port=5555, threaded=True)

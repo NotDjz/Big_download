@@ -23,6 +23,16 @@ document.addEventListener('DOMContentLoaded', () => {
         fetch('/open-folder').catch(() => {});
     });
 
+    // Tab switching
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+            document.getElementById('tab-' + tab.dataset.tab).classList.remove('hidden');
+        });
+    });
+
     function detectPlatform(url) {
         if (!url) return null;
         const lower = url.toLowerCase();
@@ -717,6 +727,23 @@ document.addEventListener('DOMContentLoaded', () => {
         titleEl.textContent = file.name;
         metaEl.textContent = formatSize(file.size) + ' · ' + file.category;
 
+        // Trim controls
+        const trimZone = document.getElementById('trim-zone');
+        const trimPanel = document.getElementById('trim-panel');
+        const trimToggle = document.getElementById('trim-toggle-btn');
+        if (!isPhoto) {
+            trimZone.classList.remove('hidden');
+            trimPanel.classList.add('hidden');
+            trimToggle.classList.remove('active');
+            window._currentPlayerFile = file;
+            document.getElementById('trim-start').value = '0:00';
+            document.getElementById('trim-end').value = '';
+            document.getElementById('trim-status').classList.add('hidden');
+        } else {
+            trimZone.classList.add('hidden');
+            window._currentPlayerFile = null;
+        }
+
         modal.classList.remove('hidden');
         document.body.style.overflow = 'hidden';
     };
@@ -764,6 +791,354 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.getElementById('player-volume').value = media.volume;
                 updateVolIcon();
             }
+        }
+    });
+
+    // ==================== TRIM (player modal) ====================
+
+    function parseTime(str) {
+        if (!str) return NaN;
+        const parts = str.split(':').map(Number);
+        if (parts.some(isNaN)) return NaN;
+        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+        if (parts.length === 2) return parts[0] * 60 + parts[1];
+        return parts[0];
+    }
+
+    function fmtTimeInput(s) {
+        if (!s || !isFinite(s)) return '0:00';
+        s = Math.floor(s);
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const sec = s % 60;
+        if (h > 0) return h + ':' + String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0');
+        return m + ':' + String(sec).padStart(2, '0');
+    }
+
+    document.getElementById('trim-toggle-btn').addEventListener('click', () => {
+        const panel = document.getElementById('trim-panel');
+        const btn = document.getElementById('trim-toggle-btn');
+        const isHidden = panel.classList.toggle('hidden');
+        btn.classList.toggle('active', !isHidden);
+        if (!isHidden) {
+            const media = getMedia();
+            if (media && media.duration) {
+                document.getElementById('trim-end').value = fmtTimeInput(media.duration);
+            }
+        }
+    });
+
+    document.getElementById('trim-set-start').addEventListener('click', () => {
+        const media = getMedia();
+        if (media) document.getElementById('trim-start').value = fmtTimeInput(media.currentTime);
+    });
+
+    document.getElementById('trim-set-end').addEventListener('click', () => {
+        const media = getMedia();
+        if (media) document.getElementById('trim-end').value = fmtTimeInput(media.currentTime);
+    });
+
+    document.getElementById('trim-cut-btn').addEventListener('click', async () => {
+        const file = window._currentPlayerFile;
+        if (!file) return;
+        const start = parseTime(document.getElementById('trim-start').value);
+        const end = parseTime(document.getElementById('trim-end').value);
+        if (isNaN(start) || isNaN(end) || end <= start) return;
+
+        const btn = document.getElementById('trim-cut-btn');
+        const statusEl = document.getElementById('trim-status');
+        btn.disabled = true;
+        btn.textContent = 'Decoupe...';
+        statusEl.textContent = 'Decoupe en cours...';
+        statusEl.className = 'trim-status loading';
+        statusEl.classList.remove('hidden');
+
+        try {
+            const resp = await fetch('/cut-video', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ category: file.category, filename: file.name, start, end }),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                statusEl.textContent = data.message + ' (' + formatSize(data.size) + ')';
+                statusEl.className = 'trim-status success';
+                loadDownloadsList();
+                loadStats();
+            } else {
+                statusEl.textContent = data.error;
+                statusEl.className = 'trim-status error';
+            }
+        } catch (err) {
+            statusEl.textContent = 'Erreur: ' + err.message;
+            statusEl.className = 'trim-status error';
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Couper';
+        }
+    });
+
+    // ==================== CUT EDITOR (tab) ====================
+
+    let cutState = { tempName: null, originalName: null, duration: 0, startPct: 0, endPct: 1, media: null };
+
+    const cutDropzone = document.getElementById('cut-dropzone');
+    const cutFileInput = document.getElementById('cut-file-input');
+    const cutEditor = document.getElementById('cut-editor');
+    const cutUploadZone = document.getElementById('cut-upload-zone');
+
+    cutDropzone.addEventListener('click', () => cutFileInput.click());
+    cutDropzone.addEventListener('dragover', (e) => { e.preventDefault(); cutDropzone.classList.add('dragover'); });
+    cutDropzone.addEventListener('dragleave', () => cutDropzone.classList.remove('dragover'));
+    cutDropzone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        cutDropzone.classList.remove('dragover');
+        if (e.dataTransfer.files.length > 0) uploadCutFile(e.dataTransfer.files[0]);
+    });
+    cutFileInput.addEventListener('change', () => {
+        if (cutFileInput.files.length > 0) uploadCutFile(cutFileInput.files[0]);
+    });
+
+    document.getElementById('cut-reset-btn').addEventListener('click', resetCutEditor);
+
+    async function uploadCutFile(file) {
+        cutDropzone.classList.add('dragover');
+        const origText = document.querySelector('.cut-dropzone-text');
+        origText.textContent = 'Upload en cours...';
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const resp = await fetch('/upload-for-cut', { method: 'POST', body: formData });
+            const data = await resp.json();
+
+            if (data.error) {
+                origText.textContent = data.error;
+                setTimeout(() => { origText.textContent = 'Glisse un fichier ici'; cutDropzone.classList.remove('dragover'); }, 3000);
+                return;
+            }
+
+            cutState.tempName = data.temp_name;
+            cutState.originalName = data.original_name;
+            cutState.duration = data.duration;
+            cutState.startPct = 0;
+            cutState.endPct = 1;
+
+            showCutEditor(data);
+        } catch (err) {
+            origText.textContent = 'Erreur upload: ' + err.message;
+            setTimeout(() => { origText.textContent = 'Glisse un fichier ici'; cutDropzone.classList.remove('dragover'); }, 3000);
+        }
+    }
+
+    function showCutEditor(data) {
+        cutUploadZone.classList.add('hidden');
+        cutEditor.classList.remove('hidden');
+        document.getElementById('cut-status').classList.add('hidden');
+
+        const container = document.getElementById('cut-preview-container');
+        container.textContent = '';
+        const ext = data.original_name.split('.').pop().toLowerCase();
+        const isAudio = ['mp3', 'm4a', 'wav', 'flac', 'ogg'].includes(ext);
+        const el = document.createElement(isAudio ? 'audio' : 'video');
+        el.src = '/stream-temp/' + encodeURIComponent(data.temp_name);
+        el.preload = 'metadata';
+        container.appendChild(el);
+        cutState.media = el;
+
+        el.addEventListener('loadedmetadata', () => {
+            if (!cutState.duration || cutState.duration <= 0) cutState.duration = el.duration;
+            updateCutLabels();
+        });
+        el.addEventListener('timeupdate', updateCutPlayhead);
+
+        document.getElementById('cut-filename').textContent = data.original_name;
+        document.getElementById('cut-filesize').textContent = formatSize(data.size);
+
+        updateCutLabels();
+        updateCutRange();
+        setupCutRangeHandles();
+    }
+
+    function resetCutEditor() {
+        if (_cutRangeCleanup) _cutRangeCleanup();
+        cutUploadZone.classList.remove('hidden');
+        cutEditor.classList.add('hidden');
+        if (cutState.media) cutState.media.pause();
+        cutState = { tempName: null, originalName: null, duration: 0, startPct: 0, endPct: 1, media: null };
+        cutFileInput.value = '';
+        document.querySelector('.cut-dropzone-text').textContent = 'Glisse un fichier ici';
+        cutDropzone.classList.remove('dragover');
+    }
+
+    document.getElementById('cut-play-btn').addEventListener('click', () => {
+        if (!cutState.media) return;
+        if (cutState.media.paused) {
+            cutState.media.currentTime = cutState.startPct * cutState.duration;
+            cutState.media.play();
+        } else {
+            cutState.media.pause();
+        }
+    });
+
+    function updateCutPlayhead() {
+        if (!cutState.media || !cutState.duration) return;
+        const pct = cutState.media.currentTime / cutState.duration;
+        document.getElementById('cut-playhead').style.left = (pct * 100) + '%';
+        document.getElementById('cut-current-time').textContent = fmtTimeInput(cutState.media.currentTime);
+        const playBtn = document.getElementById('cut-play-btn');
+        playBtn.textContent = cutState.media.paused ? '▶' : '⏸';
+        if (cutState.media.currentTime >= cutState.endPct * cutState.duration) {
+            cutState.media.pause();
+            cutState.media.currentTime = cutState.endPct * cutState.duration;
+        }
+    }
+
+    function updateCutLabels() {
+        const d = cutState.duration || 0;
+        const startSec = cutState.startPct * d;
+        const endSec = cutState.endPct * d;
+        document.getElementById('cut-label-start').textContent = fmtTimeInput(startSec);
+        document.getElementById('cut-label-end').textContent = fmtTimeInput(endSec);
+        const dur = endSec - startSec;
+        document.getElementById('cut-label-duration').textContent = dur > 0 ? 'Selection: ' + fmtTimeInput(dur) : '';
+    }
+
+    function updateCutRange() {
+        const selected = document.getElementById('cut-range-selected');
+        const handleStart = document.getElementById('cut-handle-start');
+        const handleEnd = document.getElementById('cut-handle-end');
+        selected.style.left = (cutState.startPct * 100) + '%';
+        selected.style.right = ((1 - cutState.endPct) * 100) + '%';
+        handleStart.style.left = (cutState.startPct * 100) + '%';
+        handleEnd.style.left = (cutState.endPct * 100) + '%';
+    }
+
+    let _cutRangeCleanup = null;
+
+    function setupCutRangeHandles() {
+        if (_cutRangeCleanup) _cutRangeCleanup();
+
+        const track = document.getElementById('cut-range-track');
+        const handleStart = document.getElementById('cut-handle-start');
+        const handleEnd = document.getElementById('cut-handle-end');
+
+        function pctFromEvent(e) {
+            const rect = track.getBoundingClientRect();
+            const x = (e.touches ? e.touches[0].clientX : e.clientX);
+            return Math.max(0, Math.min(1, (x - rect.left) / rect.width));
+        }
+
+        let dragging = null;
+
+        function onDown(handle, e) {
+            e.preventDefault();
+            dragging = handle;
+            document.getElementById('cut-handle-' + handle).classList.add('dragging');
+        }
+
+        const onStartMouse = (e) => onDown('start', e);
+        const onEndMouse = (e) => onDown('end', e);
+        const onStartTouch = (e) => onDown('start', e);
+        const onEndTouch = (e) => onDown('end', e);
+
+        handleStart.addEventListener('mousedown', onStartMouse);
+        handleEnd.addEventListener('mousedown', onEndMouse);
+        handleStart.addEventListener('touchstart', onStartTouch, { passive: false });
+        handleEnd.addEventListener('touchstart', onEndTouch, { passive: false });
+
+        function onMove(e) {
+            if (!dragging) return;
+            const pct = pctFromEvent(e);
+            if (dragging === 'start') {
+                cutState.startPct = Math.min(pct, cutState.endPct - 0.005);
+            } else {
+                cutState.endPct = Math.max(pct, cutState.startPct + 0.005);
+            }
+            updateCutRange();
+            updateCutLabels();
+        }
+
+        function onUp() {
+            if (!dragging) return;
+            document.getElementById('cut-handle-' + dragging).classList.remove('dragging');
+            if (cutState.media && dragging === 'start') {
+                cutState.media.currentTime = cutState.startPct * cutState.duration;
+            }
+            dragging = null;
+        }
+
+        document.addEventListener('mousemove', onMove);
+        document.addEventListener('mouseup', onUp);
+        document.addEventListener('touchmove', onMove, { passive: true });
+        document.addEventListener('touchend', onUp);
+
+        function onTrackClick(e) {
+            if (e.target === handleStart || e.target === handleEnd) return;
+            const pct = pctFromEvent(e);
+            if (cutState.media) {
+                cutState.media.currentTime = pct * cutState.duration;
+                updateCutPlayhead();
+            }
+        }
+        track.addEventListener('click', onTrackClick);
+
+        _cutRangeCleanup = () => {
+            handleStart.removeEventListener('mousedown', onStartMouse);
+            handleEnd.removeEventListener('mousedown', onEndMouse);
+            handleStart.removeEventListener('touchstart', onStartTouch);
+            handleEnd.removeEventListener('touchstart', onEndTouch);
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+            document.removeEventListener('touchmove', onMove);
+            document.removeEventListener('touchend', onUp);
+            track.removeEventListener('click', onTrackClick);
+            _cutRangeCleanup = null;
+        };
+    }
+
+    document.getElementById('cut-do-btn').addEventListener('click', async () => {
+        if (!cutState.tempName || !cutState.duration) return;
+        const start = cutState.startPct * cutState.duration;
+        const end = cutState.endPct * cutState.duration;
+        if (end <= start) return;
+
+        const btn = document.getElementById('cut-do-btn');
+        const statusEl = document.getElementById('cut-status');
+        btn.disabled = true;
+        btn.textContent = 'Decoupe...';
+        statusEl.textContent = 'Decoupe en cours...';
+        statusEl.className = 'trim-status loading';
+        statusEl.classList.remove('hidden');
+
+        try {
+            const resp = await fetch('/cut-uploaded', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    temp_name: cutState.tempName,
+                    original_name: cutState.originalName,
+                    start: start,
+                    end: end,
+                }),
+            });
+            const data = await resp.json();
+            if (data.success) {
+                statusEl.textContent = data.message + ' (' + formatSize(data.size) + ')';
+                statusEl.className = 'trim-status success';
+                loadDownloadsList();
+                loadStats();
+            } else {
+                statusEl.textContent = data.error;
+                statusEl.className = 'trim-status error';
+            }
+        } catch (err) {
+            statusEl.textContent = 'Erreur: ' + err.message;
+            statusEl.className = 'trim-status error';
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Couper';
         }
     });
 });
