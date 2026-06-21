@@ -718,11 +718,14 @@ body::after {
     color: #b8b8d0;
     font-size: 1rem;
     cursor: pointer;
-    padding: 4px;
+    padding: 0;
     flex-shrink: 0;
     font-family: inherit;
     width: 28px;
-    text-align: center;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     transition: color 0.15s;
 }
 
@@ -776,6 +779,8 @@ body::after {
 
 .player-vol-icon {
     font-size: 0.875rem;
+    width: 24px;
+    height: 24px;
 }
 
 .player-volume {
