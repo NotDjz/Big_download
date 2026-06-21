@@ -16,7 +16,7 @@ import platform
 from PIL import Image
 import shutil
 import sys
-import webbrowser
+import webview
 
 if getattr(sys, 'frozen', False):
     BUNDLE_DIR = Path(sys._MEIPASS)
@@ -1289,36 +1289,27 @@ def _migrate_legacy_folders():
 
 
 if __name__ == '__main__':
-    import sys
-    import io
-    if sys.stdout.encoding and sys.stdout.encoding.lower() not in ('utf-8', 'utf8'):
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-
-    print("""
-██████╗ ██╗ ██████╗     ██████╗  ██████╗ ██╗    ██╗███╗   ██╗██╗      ██████╗  █████╗ ██████╗
-██╔══██╗██║██╔════╝     ██╔══██╗██╔═══██╗██║    ██║████╗  ██║██║     ██╔═══██╗██╔══██╗██╔══██╗
-██████╔╝██║██║  ███╗    ██║  ██║██║   ██║██║ █╗ ██║██╔██╗ ██║██║     ██║   ██║███████║██║  ██║
-██╔══██╗██║██║   ██║    ██║  ██║██║   ██║██║███╗██║██║╚██╗██║██║     ██║   ██║██╔══██║██║  ██║
-██████╔╝██║╚██████╔╝    ██████╔╝╚██████╔╝╚███╔███╔╝██║ ╚████║███████╗╚██████╔╝██║  ██║██████╔╝
-╚═════╝ ╚═╝ ╚═════╝     ╚═════╝  ╚═════╝  ╚══╝╚══╝ ╚═╝  ╚═══╝╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═════╝
-""")
-    print("=" * 80)
-    print("BIG DOWNLOADER - Telechargeur Universel")
-    print("=" * 80)
-    print("\nFONCTIONNALITES :")
-    print("  YouTube Video (MP4 jusqu'a 4K)")
-    print("  MP3 Audio (YouTube, SoundCloud, etc.)")
-    print("  Reseaux Sociaux (Instagram, TikTok, X/Twitter)")
-    print("\nSECURITE :")
-    print("  Acces localhost uniquement")
-    print("  Taille max : 5 GB")
-    print("  Noms de fichiers securises")
-    print("\nOuvrez votre navigateur a l'adresse :")
-    print("   http://localhost:5555")
-    print("\nAppuyez sur Ctrl+C pour arreter le serveur")
-    print("=" * 80)
-
     _migrate_legacy_folders()
-    threading.Timer(1.5, lambda: webbrowser.open("http://localhost:5555")).start()
-    app.run(debug=False, host='127.0.0.1', port=5555, threaded=True)
+
+    flask_thread = threading.Thread(
+        target=lambda: app.run(debug=False, host='127.0.0.1', port=5555, threaded=True),
+        daemon=True,
+    )
+    flask_thread.start()
+
+    import socket
+    for _ in range(50):
+        try:
+            with socket.create_connection(('127.0.0.1', 5555), timeout=0.2):
+                break
+        except OSError:
+            time.sleep(0.1)
+
+    webview.create_window(
+        'Big Downloader',
+        'http://localhost:5555',
+        width=1100,
+        height=800,
+        min_size=(800, 600),
+    )
+    webview.start()

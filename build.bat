@@ -18,12 +18,14 @@ REM Installer PyInstaller
 py -m pip install pyinstaller
 
 REM Compiler
-py -m PyInstaller --noconfirm --onefile --console --name BigDownloader ^
+py -m PyInstaller --noconfirm --onefile --windowed --name BigDownloader ^
     --add-data "templates;templates" ^
     --add-data "static;static" ^
     --add-data "ffmpeg.exe;." ^
     --add-data "ffprobe.exe;." ^
     --hidden-import yt_dlp ^
+    --hidden-import webview ^
+    --collect-all webview ^
     app.py
 
 echo.
