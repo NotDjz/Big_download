@@ -450,8 +450,8 @@ body::after {
 
 .downloads-header {
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    gap: 8px;
     margin-bottom: 12px;
 }
 
@@ -469,25 +469,27 @@ body::after {
 }
 
 .open-folder-btn {
-    background: none;
-    border: 1px solid #2a2a40;
-    border-radius: 6px;
-    padding: 4px 10px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 5px 10px;
     cursor: pointer;
     font-size: 0.85rem;
-    transition: background 0.2s;
+    transition: all 0.15s;
     margin-left: auto;
+    color: #9898b0;
 }
 
 .open-folder-btn:hover {
-    background: #1a1a30;
+    background: rgba(139, 92, 246, 0.1);
+    border-color: rgba(139, 92, 246, 0.25);
 }
 
 .downloads-list {
     display: flex;
     flex-direction: column;
-    gap: 3px;
-    max-height: 600px;
+    gap: 4px;
+    max-height: 500px;
     overflow-y: auto;
 }
 
@@ -545,10 +547,10 @@ body::after {
 
 .dl-actions {
     display: flex;
-    gap: 4px;
+    gap: 2px;
     align-items: center;
     flex-shrink: 0;
-    opacity: 0;
+    opacity: 0.4;
     transition: opacity 0.15s;
 }
 
@@ -590,9 +592,10 @@ body::after {
 .footer {
     display: flex;
     justify-content: space-between;
-    padding: 20px 0;
+    align-items: center;
+    padding: 16px 0;
     font-size: 0.6875rem;
-    color: #8888a0;
+    color: #6a6a80;
     border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
@@ -839,7 +842,10 @@ body::after {
 }
 
 .trim-controls {
-    padding: 10px 20px 14px;
+    padding: 12px 20px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
 }
 
 .trim-toggle-btn {
@@ -873,8 +879,9 @@ body::after {
 .trim-inputs {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     flex-wrap: wrap;
+    row-gap: 8px;
 }
 
 .trim-field {
@@ -941,11 +948,12 @@ body::after {
     color: #fff;
     font-size: 0.8125rem;
     font-weight: 600;
-    padding: 6px 18px;
+    padding: 7px 18px;
     border-radius: 8px;
     cursor: pointer;
     transition: all 0.2s;
     font-family: inherit;
+    line-height: 1.2;
 }
 
 .trim-cut-btn:hover {
@@ -1162,6 +1170,8 @@ body::after {
     justify-content: space-between;
     gap: 12px;
     flex-wrap: wrap;
+    row-gap: 10px;
+    padding-top: 4px;
 }
 
 .cut-file-info {
@@ -1189,6 +1199,7 @@ body::after {
     display: flex;
     gap: 8px;
     flex-shrink: 0;
+    align-items: center;
 }
 
 .cut-reset-btn {
@@ -1196,11 +1207,12 @@ body::after {
     border: 1px solid rgba(255, 255, 255, 0.08);
     color: #b8b8d0;
     font-size: 0.8125rem;
-    padding: 6px 14px;
+    padding: 7px 14px;
     border-radius: 8px;
     cursor: pointer;
     transition: all 0.15s;
     font-family: inherit;
+    line-height: 1.2;
 }
 
 .cut-reset-btn:hover {

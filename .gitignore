@@ -44,3 +44,5 @@ test_*.txt
 # Plugins/tools
 .claude/
 .superpowers/
+CLAUDE.md
+*.dc.html
