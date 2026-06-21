@@ -19,6 +19,7 @@ py -m pip install pyinstaller
 
 REM Compiler
 py -m PyInstaller --noconfirm --onefile --windowed --name BigDownloader ^
+    --icon "icon.ico" ^
     --add-data "templates;templates" ^
     --add-data "static;static" ^
     --add-data "ffmpeg.exe;." ^
