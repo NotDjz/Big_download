@@ -188,17 +188,14 @@ def _get_format_string(download_type, quality=None):
         return 'best'
     elif quality:
         return (
-            f'bestvideo[ext=mp4][height<={quality}]+bestaudio[ext=m4a]/'
             f'bestvideo[height<={quality}]+bestaudio/'
+            f'bestvideo[ext=mp4][height<={quality}]+bestaudio[ext=m4a]/'
             'best'
         )
     else:
         return (
-            'bestvideo[ext=mp4][height<=2160]+bestaudio[ext=m4a]/'
-            'bestvideo[ext=mp4][height<=1440]+bestaudio[ext=m4a]/'
-            'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/'
-            'bestvideo[ext=mp4]+bestaudio[ext=m4a]/'
             'bestvideo+bestaudio/'
+            'bestvideo[ext=mp4]+bestaudio[ext=m4a]/'
             'best'
         )
 

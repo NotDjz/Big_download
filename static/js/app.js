@@ -601,7 +601,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const pct = media.duration ? (media.currentTime / media.duration) * 100 : 0;
         fill.style.width = pct + '%';
         timeEl.textContent = fmtTime(media.currentTime) + ' / ' + fmtTime(media.duration);
-        playBtn.innerHTML = media.paused ? '&#9654;' : '&#9646;&#9646;';
+        playBtn.textContent = media.paused ? '▶' : '⏸';
 
         seekAnimFrame = requestAnimationFrame(updatePlayerUI);
     }
