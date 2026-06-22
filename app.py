@@ -153,7 +153,7 @@ def clean_youtube_url(url):
             video_id = url.split('shorts/')[-1].split('?')[0]
             return f'https://www.youtube.com/watch?v={video_id}'
         return url
-    except:
+    except Exception:
         return url
 
 
