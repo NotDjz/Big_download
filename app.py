@@ -1122,49 +1122,6 @@ def cut_progress_stream(cut_id):
     )
 
 
-@app.route('/cut-video', methods=['POST'])
-def cut_video():
-    """Decoupe une video/audio entre deux timestamps avec FFmpeg."""
-    data = request.get_json()
-    category = data.get('category')
-    filename = data.get('filename')
-    start = data.get('start', 0)
-    end = data.get('end')
-
-    if not category or not filename or end is None:
-        return jsonify({'error': 'Parametres manquants'}), 400
-
-    if end <= start:
-        return jsonify({'error': 'Le temps de fin doit etre apres le debut'}), 400
-
-    safe_filename = sanitize_filename(filename)
-    folder = _resolve_category_folder(category)
-    if not folder:
-        return jsonify({'error': 'Categorie invalide'}), 400
-
-    file_path = (folder / safe_filename).resolve()
-    if not str(file_path).startswith(str(folder.resolve())):
-        return jsonify({'error': 'Acces refuse'}), 403
-    if not file_path.exists():
-        return jsonify({'error': 'Fichier non trouve'}), 404
-
-    stem = file_path.stem
-    ext = file_path.suffix
-    out_name = _next_versioned_name(folder, stem, ext)
-    out_path = folder / out_name
-
-    cut_id = str(uuid.uuid4())[:8]
-    duration = end - start
-    cut_progress[cut_id] = {'queue': queue.Queue(maxsize=200)}
-    thread = threading.Thread(
-        target=_run_ffmpeg_cut,
-        args=(cut_id, file_path, out_path, start, duration),
-        daemon=True,
-    )
-    thread.start()
-    return jsonify({'cut_id': cut_id})
-
-
 TEMP_FOLDER = BASE_DIR / "temp_uploads"
 TEMP_FOLDER.mkdir(exist_ok=True)
 

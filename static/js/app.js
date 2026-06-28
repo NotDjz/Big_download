@@ -759,23 +759,6 @@ document.addEventListener('DOMContentLoaded', () => {
         titleEl.textContent = file.name;
         metaEl.textContent = formatSize(file.size) + ' · ' + file.category;
 
-        // Trim controls
-        const trimZone = document.getElementById('trim-zone');
-        const trimPanel = document.getElementById('trim-panel');
-        const trimToggle = document.getElementById('trim-toggle-btn');
-        if (!isPhoto) {
-            trimZone.classList.remove('hidden');
-            trimPanel.classList.add('hidden');
-            trimToggle.classList.remove('active');
-            window._currentPlayerFile = file;
-            document.getElementById('trim-start').value = '0:00';
-            document.getElementById('trim-end').value = '';
-            document.getElementById('trim-status').classList.add('hidden');
-        } else {
-            trimZone.classList.add('hidden');
-            window._currentPlayerFile = null;
-        }
-
         modal.classList.remove('hidden');
         document.body.style.overflow = 'hidden';
     };
@@ -826,17 +809,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // ==================== TRIM (player modal) ====================
-
-    function parseTime(str) {
-        if (!str) return NaN;
-        const parts = str.split(':').map(Number);
-        if (parts.some(isNaN)) return NaN;
-        if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-        if (parts.length === 2) return parts[0] * 60 + parts[1];
-        return parts[0];
-    }
-
     function fmtTimeInput(s) {
         if (!s || !isFinite(s)) return '0:00';
         s = Math.floor(s);
@@ -846,29 +818,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (h > 0) return h + ':' + String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0');
         return m + ':' + String(sec).padStart(2, '0');
     }
-
-    document.getElementById('trim-toggle-btn').addEventListener('click', () => {
-        const panel = document.getElementById('trim-panel');
-        const btn = document.getElementById('trim-toggle-btn');
-        const isHidden = panel.classList.toggle('hidden');
-        btn.classList.toggle('active', !isHidden);
-        if (!isHidden) {
-            const media = getMedia();
-            if (media && media.duration) {
-                document.getElementById('trim-end').value = fmtTimeInput(media.duration);
-            }
-        }
-    });
-
-    document.getElementById('trim-set-start').addEventListener('click', () => {
-        const media = getMedia();
-        if (media) document.getElementById('trim-start').value = fmtTimeInput(media.currentTime);
-    });
-
-    document.getElementById('trim-set-end').addEventListener('click', () => {
-        const media = getMedia();
-        if (media) document.getElementById('trim-end').value = fmtTimeInput(media.currentTime);
-    });
 
     function followCutProgress(cutId, statusEl, progressBarEl, btn, btnLabel) {
         const fill = progressBarEl.querySelector('.cut-progress-fill');
@@ -908,45 +857,6 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.textContent = btnLabel;
         };
     }
-
-    document.getElementById('trim-cut-btn').addEventListener('click', async () => {
-        const file = window._currentPlayerFile;
-        if (!file) return;
-        const start = parseTime(document.getElementById('trim-start').value);
-        const end = parseTime(document.getElementById('trim-end').value);
-        if (isNaN(start) || isNaN(end) || end <= start) return;
-
-        const btn = document.getElementById('trim-cut-btn');
-        const statusEl = document.getElementById('trim-status');
-        const progressBar = document.getElementById('trim-progress-bar');
-        btn.disabled = true;
-        btn.textContent = 'Decoupe...';
-        statusEl.textContent = 'Decoupe en cours... 0%';
-        statusEl.className = 'trim-status loading';
-        statusEl.classList.remove('hidden');
-
-        try {
-            const resp = await fetch('/cut-video', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ category: file.category, filename: file.name, start, end }),
-            });
-            const data = await resp.json();
-            if (data.cut_id) {
-                followCutProgress(data.cut_id, statusEl, progressBar, btn, 'Couper');
-            } else {
-                statusEl.textContent = data.error || 'Erreur inconnue';
-                statusEl.className = 'trim-status error';
-                btn.disabled = false;
-                btn.textContent = 'Couper';
-            }
-        } catch (err) {
-            statusEl.textContent = 'Erreur: ' + err.message;
-            statusEl.className = 'trim-status error';
-            btn.disabled = false;
-            btn.textContent = 'Couper';
-        }
-    });
 
     // ==================== CUT EDITOR (tab) ====================
 
