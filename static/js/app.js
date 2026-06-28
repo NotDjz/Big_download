@@ -844,6 +844,45 @@ document.addEventListener('DOMContentLoaded', () => {
         if (media) document.getElementById('trim-end').value = fmtTimeInput(media.currentTime);
     });
 
+    function followCutProgress(cutId, statusEl, progressBarEl, btn, btnLabel) {
+        const fill = progressBarEl.querySelector('.cut-progress-fill');
+        progressBarEl.classList.remove('hidden');
+        fill.style.width = '0%';
+        const es = new EventSource('/cut-progress/' + cutId);
+        es.onmessage = (e) => {
+            const ev = JSON.parse(e.data);
+            if (ev.status === 'progress') {
+                fill.style.width = ev.percent + '%';
+                statusEl.textContent = 'Decoupe en cours... ' + ev.percent + '%';
+            } else if (ev.status === 'complete') {
+                es.close();
+                fill.style.width = '100%';
+                statusEl.textContent = ev.message + ' (' + formatSize(ev.size) + ')';
+                statusEl.className = 'trim-status success';
+                setTimeout(() => progressBarEl.classList.add('hidden'), 1500);
+                btn.disabled = false;
+                btn.textContent = btnLabel;
+                loadDownloadsList();
+                loadStats();
+            } else if (ev.status === 'error') {
+                es.close();
+                progressBarEl.classList.add('hidden');
+                statusEl.textContent = ev.message;
+                statusEl.className = 'trim-status error';
+                btn.disabled = false;
+                btn.textContent = btnLabel;
+            }
+        };
+        es.onerror = () => {
+            es.close();
+            progressBarEl.classList.add('hidden');
+            statusEl.textContent = 'Connexion perdue';
+            statusEl.className = 'trim-status error';
+            btn.disabled = false;
+            btn.textContent = btnLabel;
+        };
+    }
+
     document.getElementById('trim-cut-btn').addEventListener('click', async () => {
         const file = window._currentPlayerFile;
         if (!file) return;
@@ -853,9 +892,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const btn = document.getElementById('trim-cut-btn');
         const statusEl = document.getElementById('trim-status');
+        const progressBar = document.getElementById('trim-progress-bar');
         btn.disabled = true;
         btn.textContent = 'Decoupe...';
-        statusEl.textContent = 'Decoupe en cours...';
+        statusEl.textContent = 'Decoupe en cours... 0%';
         statusEl.className = 'trim-status loading';
         statusEl.classList.remove('hidden');
 
@@ -866,19 +906,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify({ category: file.category, filename: file.name, start, end }),
             });
             const data = await resp.json();
-            if (data.success) {
-                statusEl.textContent = data.message + ' (' + formatSize(data.size) + ')';
-                statusEl.className = 'trim-status success';
-                loadDownloadsList();
-                loadStats();
+            if (data.cut_id) {
+                followCutProgress(data.cut_id, statusEl, progressBar, btn, 'Couper');
             } else {
-                statusEl.textContent = data.error;
+                statusEl.textContent = data.error || 'Erreur inconnue';
                 statusEl.className = 'trim-status error';
+                btn.disabled = false;
+                btn.textContent = 'Couper';
             }
         } catch (err) {
             statusEl.textContent = 'Erreur: ' + err.message;
             statusEl.className = 'trim-status error';
-        } finally {
             btn.disabled = false;
             btn.textContent = 'Couper';
         }
@@ -1112,9 +1150,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const btn = document.getElementById('cut-do-btn');
         const statusEl = document.getElementById('cut-status');
+        const progressBar = document.getElementById('cut-progress-bar');
         btn.disabled = true;
         btn.textContent = 'Decoupe...';
-        statusEl.textContent = 'Decoupe en cours...';
+        statusEl.textContent = 'Decoupe en cours... 0%';
         statusEl.className = 'trim-status loading';
         statusEl.classList.remove('hidden');
 
@@ -1130,19 +1169,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 }),
             });
             const data = await resp.json();
-            if (data.success) {
-                statusEl.textContent = data.message + ' (' + formatSize(data.size) + ')';
-                statusEl.className = 'trim-status success';
-                loadDownloadsList();
-                loadStats();
+            if (data.cut_id) {
+                followCutProgress(data.cut_id, statusEl, progressBar, btn, 'Couper');
             } else {
-                statusEl.textContent = data.error;
+                statusEl.textContent = data.error || 'Erreur inconnue';
                 statusEl.className = 'trim-status error';
+                btn.disabled = false;
+                btn.textContent = 'Couper';
             }
         } catch (err) {
             statusEl.textContent = 'Erreur: ' + err.message;
             statusEl.className = 'trim-status error';
-        } finally {
             btn.disabled = false;
             btn.textContent = 'Couper';
         }

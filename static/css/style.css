@@ -997,6 +997,22 @@ body::after {
     color: #c4b5fd;
 }
 
+.cut-progress-bar {
+    margin-top: 8px;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(139, 92, 246, 0.15);
+    overflow: hidden;
+}
+
+.cut-progress-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 3px;
+    background: linear-gradient(90deg, #8b5cf6, #a78bfa);
+    transition: width 0.3s ease;
+}
+
 /* Cut editor (tab) */
 .cut-upload-zone {
     padding: 10px 0 20px;

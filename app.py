@@ -51,6 +51,8 @@ log = logging.getLogger('bigdl')
 
 # Suivi de progression des telechargements (download_id -> {queue, thread, start_time})
 download_progress = {}
+# Suivi de progression des decoupes (cut_id -> {queue, thread})
+cut_progress = {}
 
 # Configuration
 MAX_VIDEO_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
@@ -61,6 +63,9 @@ DOWNLOAD_FOLDER = BASE_DIR / "downloads"
 if getattr(sys, 'frozen', False) and platform.system() == 'Windows':
     FFMPEG_PATH = str(BUNDLE_DIR / "ffmpeg.exe")
     FFPROBE_PATH = str(BUNDLE_DIR / "ffprobe.exe")
+elif (BASE_DIR / "ffmpeg.exe").exists():
+    FFMPEG_PATH = str(BASE_DIR / "ffmpeg.exe")
+    FFPROBE_PATH = str(BASE_DIR / "ffprobe.exe")
 else:
     FFMPEG_PATH = "ffmpeg"
     FFPROBE_PATH = "ffprobe"
@@ -1023,9 +1028,103 @@ def stream_file(category, filename):
     return jsonify({'error': 'Fichier non trouve'}), 404
 
 
+def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=None):
+    """Execute FFmpeg dans un thread avec progression via stderr."""
+    q = cut_progress[cut_id]['queue']
+    try:
+        cmd = [
+            FFMPEG_PATH, '-y',
+            '-ss', str(start),
+            '-i', str(input_path),
+            '-t', str(duration),
+            '-avoid_negative_ts', 'make_zero',
+            '-progress', 'pipe:2',
+            str(out_path),
+        ]
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, **_SUBPROCESS_FLAGS,
+        )
+        start_time = time.time()
+        current_time = 0.0
+        for line in proc.stderr:
+            if time.time() - start_time > 600:
+                proc.kill()
+                if out_path.exists():
+                    out_path.unlink()
+                if temp_cleanup:
+                    temp_cleanup.unlink(missing_ok=True)
+                q.put({'status': 'error', 'message': 'Timeout: decoupe trop longue'})
+                return
+            if line.startswith('out_time_us='):
+                try:
+                    us = int(line.split('=')[1].strip())
+                    current_time = us / 1_000_000
+                    pct = min(current_time / duration, 1.0) if duration > 0 else 0
+                    q.put({'status': 'progress', 'percent': round(pct * 100, 1)})
+                except (ValueError, ZeroDivisionError):
+                    pass
+        proc.wait()
+
+        if proc.returncode != 0:
+            if out_path.exists():
+                out_path.unlink()
+            if temp_cleanup:
+                temp_cleanup.unlink(missing_ok=True)
+            q.put({'status': 'error', 'message': 'Erreur FFmpeg lors de la decoupe'})
+            return
+
+        if temp_cleanup:
+            temp_cleanup.unlink(missing_ok=True)
+        log.info(f"Cut done: {out_path.name} ({out_path.stat().st_size / 1024 / 1024:.1f} MB)")
+        q.put({
+            'status': 'complete',
+            'filename': out_path.name,
+            'size': out_path.stat().st_size,
+            'message': f'Decoupe terminee: {out_path.name}',
+        })
+    except FileNotFoundError:
+        if temp_cleanup:
+            temp_cleanup.unlink(missing_ok=True)
+        q.put({'status': 'error', 'message': 'FFmpeg non trouve'})
+    except Exception as e:
+        if out_path.exists():
+            out_path.unlink()
+        if temp_cleanup:
+            temp_cleanup.unlink(missing_ok=True)
+        log.error(f"Cut error: {e}")
+        q.put({'status': 'error', 'message': str(e)})
+
+
+@app.route('/cut-progress/<cut_id>')
+def cut_progress_stream(cut_id):
+    """Endpoint SSE pour le suivi de progression des decoupes."""
+    def generate():
+        entry = cut_progress.get(cut_id)
+        if not entry:
+            yield f'data: {json.dumps({"status": "error", "message": "Decoupe inconnue"})}\n\n'
+            return
+        q = entry['queue']
+        while True:
+            try:
+                event = q.get(timeout=15)
+                yield f'data: {json.dumps(event)}\n\n'
+                if event.get('status') in ('complete', 'error'):
+                    break
+            except queue.Empty:
+                yield f'data: {json.dumps({"status": "heartbeat"})}\n\n'
+        cut_progress.pop(cut_id, None)
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
+    )
+
+
 @app.route('/cut-video', methods=['POST'])
 def cut_video():
-    """Decoupe une video/audio entre deux timestamps avec FFmpeg"""
+    """Decoupe une video/audio entre deux timestamps avec FFmpeg."""
     data = request.get_json()
     category = data.get('category')
     filename = data.get('filename')
@@ -1054,41 +1153,16 @@ def cut_video():
     out_name = _next_versioned_name(folder, stem, ext)
     out_path = folder / out_name
 
-    try:
-        duration = end - start
-        cmd = [
-            FFMPEG_PATH, '-y',
-            '-ss', str(start),
-            '-i', str(file_path),
-            '-t', str(duration),
-            '-avoid_negative_ts', 'make_zero',
-            str(out_path),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, **_SUBPROCESS_FLAGS)
-        if result.returncode != 0:
-            if out_path.exists():
-                out_path.unlink()
-            log.error(f"FFmpeg cut failed: {result.stderr[-500:]}")
-            return jsonify({'error': 'Erreur FFmpeg lors de la decoupe'}), 500
-
-        log.info(f"Video cut: {safe_filename} -> {out_name}")
-        return jsonify({
-            'success': True,
-            'filename': out_path.name,
-            'size': out_path.stat().st_size,
-            'message': f'Decoupe terminee: {out_path.name}',
-        })
-    except subprocess.TimeoutExpired:
-        if out_path.exists():
-            out_path.unlink()
-        return jsonify({'error': 'Timeout: decoupe trop longue'}), 500
-    except FileNotFoundError:
-        return jsonify({'error': 'FFmpeg non trouve. Verifiez qu\'il est installe et dans le PATH.'}), 500
-    except Exception as e:
-        if out_path.exists():
-            out_path.unlink()
-        log.error(f"Cut error: {e}")
-        return jsonify({'error': str(e)}), 500
+    cut_id = str(uuid.uuid4())[:8]
+    duration = end - start
+    cut_progress[cut_id] = {'queue': queue.Queue(maxsize=200)}
+    thread = threading.Thread(
+        target=_run_ffmpeg_cut,
+        args=(cut_id, file_path, out_path, start, duration),
+        daemon=True,
+    )
+    thread.start()
+    return jsonify({'cut_id': cut_id})
 
 
 TEMP_FOLDER = BASE_DIR / "temp_uploads"
@@ -1180,47 +1254,16 @@ def cut_uploaded():
     out_name = _next_versioned_name(dest_folder, stem, ext)
     out_path = dest_folder / out_name
 
-    try:
-        duration = end - start
-        cmd = [
-            FFMPEG_PATH, '-y',
-            '-ss', str(start),
-            '-i', str(temp_path),
-            '-t', str(duration),
-            '-avoid_negative_ts', 'make_zero',
-            str(out_path),
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, **_SUBPROCESS_FLAGS)
-        if result.returncode != 0:
-            if out_path.exists():
-                out_path.unlink()
-            log.error(f"FFmpeg cut failed: {result.stderr[-500:]}")
-            return jsonify({'error': 'Erreur FFmpeg lors de la decoupe'}), 500
-
-        temp_path.unlink(missing_ok=True)
-
-        log.info(f"Cut upload: {out_name} ({out_path.stat().st_size / 1024 / 1024:.1f} MB)")
-        return jsonify({
-            'success': True,
-            'filename': out_name,
-            'size': out_path.stat().st_size,
-            'download_url': f'/downloads/{dest_folder.name}/{out_name}',
-            'message': f'Decoupe terminee: {out_name}',
-        })
-    except subprocess.TimeoutExpired:
-        if out_path.exists():
-            out_path.unlink()
-        temp_path.unlink(missing_ok=True)
-        return jsonify({'error': 'Timeout: decoupe trop longue'}), 500
-    except FileNotFoundError:
-        temp_path.unlink(missing_ok=True)
-        return jsonify({'error': 'FFmpeg non trouve'}), 500
-    except Exception as e:
-        if out_path.exists():
-            out_path.unlink()
-        temp_path.unlink(missing_ok=True)
-        log.error(f"Cut upload error: {e}")
-        return jsonify({'error': str(e)}), 500
+    cut_id = str(uuid.uuid4())[:8]
+    duration = end - start
+    cut_progress[cut_id] = {'queue': queue.Queue(maxsize=200)}
+    thread = threading.Thread(
+        target=_run_ffmpeg_cut,
+        args=(cut_id, temp_path, out_path, start, duration, temp_path),
+        daemon=True,
+    )
+    thread.start()
+    return jsonify({'cut_id': cut_id})
 
 
 def _get_media_duration(filepath):

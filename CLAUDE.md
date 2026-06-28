@@ -14,7 +14,8 @@ Big Downloader (BIG DL) — application native Windows (pywebview + Flask) pour 
   - Downloads en threads daemon, progression via SSE (Server-Sent Events) avec `queue.Queue` par download
   - Formats video : priorite `bestvideo+bestaudio` (VP9/AV1 inclus pour la 4K), converti en MP4 par FFmpeg
   - Instagram photos : necessite `cookies.txt` ou `www.instagram.com_cookies.txt` a cote de l'exe
-  - Decoupe : FFmpeg avec `-ss`/`-to` apres `-i` (output seeking, re-encode pour precision a la frame)
+  - Decoupe : FFmpeg avec `-ss` avant `-i` + `-t` duration (input seeking rapide, re-encode pour precision)
+  - Progression decoupe en temps reel via SSE (parse `out_time_us` de `-progress pipe:2`)
   - Nommage des coupes : conserve le nom original + `_v2`, `_v3`, etc.
   - Upload de fichiers pour decoupe via `temp_uploads/`, nettoyage auto apres coupe reussie ou echouee
   - Rate limiting (10 req/min), timeout downloads (30 min), taille max upload (2 GB via Flask MAX_CONTENT_LENGTH)
@@ -27,10 +28,10 @@ Big Downloader (BIG DL) — application native Windows (pywebview + Flask) pour 
 ## Key Routes
 
 - `POST /start-download` → spawn thread → `GET /progress/<id>` SSE stream
-- `POST /cut-video` — decoupe un fichier deja telecharge (depuis le player modal)
+- `POST /cut-video` → spawn thread → `GET /cut-progress/<id>` SSE stream (decoupe depuis le player)
 - `POST /upload-for-cut` — upload fichier pour l'onglet Decouper (validation format + duree ffprobe)
 - `GET /stream-temp/<filename>` — sert un fichier temporaire pour la preview avant decoupe
-- `POST /cut-uploaded` — decoupe le fichier uploade, sauvegarde dans Videos/ ou Music/
+- `POST /cut-uploaded` → spawn thread → `GET /cut-progress/<id>` SSE stream (decoupe fichier uploade)
 - `GET /list-downloads` — liste tous les fichiers telecharges avec metadonnees
 - `GET /open-folder` — ouvre le dossier downloads dans l'explorateur
 
