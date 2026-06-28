@@ -522,7 +522,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 delBtn.title = 'Supprimer';
                 delBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    deleteFile(file);
+                    deleteFile(file, row);
                 });
                 actions.appendChild(delBtn);
 
@@ -542,20 +542,26 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function deleteFile(file) {
-        if (!confirm('Supprimer "' + file.name + '" ?')) return;
+    async function deleteFile(file, rowEl) {
         try {
+            rowEl.style.opacity = '0.3';
             const resp = await fetch('/delete/' + file.category + '/' + encodeURIComponent(file.name), {
                 method: 'DELETE',
             });
             const data = await resp.json();
             if (data.success) {
-                loadDownloadsList();
+                rowEl.remove();
                 loadStats();
+                const count = document.getElementById('downloads-count');
+                const remaining = document.querySelectorAll('.download-row').length;
+                count.textContent = remaining;
+                if (remaining === 0) loadDownloadsList();
             } else {
+                rowEl.style.opacity = '1';
                 showStatus(data.error || 'Erreur suppression', 'error');
             }
         } catch (err) {
+            rowEl.style.opacity = '1';
             showStatus('Erreur: ' + err.message, 'error');
         }
     }

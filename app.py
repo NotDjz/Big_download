@@ -12,7 +12,12 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 import requests
 import subprocess
+import subprocess as _sp
 import platform
+
+_SUBPROCESS_FLAGS = {}
+if platform.system() == 'Windows':
+    _SUBPROCESS_FLAGS['creationflags'] = _sp.CREATE_NO_WINDOW
 from PIL import Image
 import shutil
 import sys
@@ -1050,15 +1055,16 @@ def cut_video():
     out_path = folder / out_name
 
     try:
+        duration = end - start
         cmd = [
             FFMPEG_PATH, '-y',
-            '-i', str(file_path),
             '-ss', str(start),
-            '-to', str(end),
+            '-i', str(file_path),
+            '-t', str(duration),
             '-avoid_negative_ts', 'make_zero',
             str(out_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, **_SUBPROCESS_FLAGS)
         if result.returncode != 0:
             if out_path.exists():
                 out_path.unlink()
@@ -1175,15 +1181,16 @@ def cut_uploaded():
     out_path = dest_folder / out_name
 
     try:
+        duration = end - start
         cmd = [
             FFMPEG_PATH, '-y',
-            '-i', str(temp_path),
             '-ss', str(start),
-            '-to', str(end),
+            '-i', str(temp_path),
+            '-t', str(duration),
             '-avoid_negative_ts', 'make_zero',
             str(out_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, **_SUBPROCESS_FLAGS)
         if result.returncode != 0:
             if out_path.exists():
                 out_path.unlink()
@@ -1225,7 +1232,7 @@ def _get_media_duration(filepath):
             '-show_format',
             str(filepath),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, **_SUBPROCESS_FLAGS)
         if result.returncode == 0:
             data = json.loads(result.stdout)
             return float(data.get('format', {}).get('duration', 0))
