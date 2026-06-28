@@ -22,15 +22,8 @@ Telecharger `BigDownloader.exe` depuis la [derniere release](https://github.com/
 ```bash
 git clone https://github.com/NotDjz/Big_download.git
 cd Big_download
-
-# Windows
 install.bat
 run.bat
-
-# Linux/macOS
-chmod +x install.sh run.sh
-./install.sh
-./run.sh
 ```
 
 Prerequis : Python 3.10+, FFmpeg dans le PATH (ou lance `py download_ffmpeg.py` pour le telecharger automatiquement).
