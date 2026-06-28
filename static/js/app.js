@@ -507,14 +507,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 actions.appendChild(playBtn);
 
-                const dlLink = document.createElement('a');
-                dlLink.className = 'dl-action-btn';
-                dlLink.href = file.url;
-                dlLink.download = '';
-                dlLink.textContent = '⬇';
-                dlLink.title = 'Sauvegarder';
-                dlLink.addEventListener('click', (e) => e.stopPropagation());
-                actions.appendChild(dlLink);
+                const locateBtn = document.createElement('button');
+                locateBtn.className = 'dl-action-btn';
+                locateBtn.textContent = '📁';
+                locateBtn.title = 'Ouvrir dans l\'explorateur';
+                locateBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    fetch('/open-file/' + file.category + '/' + encodeURIComponent(file.name));
+                });
+                actions.appendChild(locateBtn);
 
                 const delBtn = document.createElement('button');
                 delBtn.className = 'dl-action-btn delete';
@@ -522,7 +523,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 delBtn.title = 'Supprimer';
                 delBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    deleteFile(file, row);
+                    confirmDelete(file, row);
                 });
                 actions.appendChild(delBtn);
 
@@ -540,6 +541,31 @@ document.addEventListener('DOMContentLoaded', () => {
             empty.textContent = 'Erreur chargement';
             listEl.appendChild(empty);
         }
+    }
+
+    function confirmDelete(file, rowEl) {
+        const overlay = document.createElement('div');
+        overlay.className = 'confirm-overlay';
+        const box = document.createElement('div');
+        box.className = 'confirm-box';
+        box.innerHTML = '<div class="confirm-msg">Supprimer <strong>' +
+            file.name.replace(/</g, '&lt;') + '</strong> ?</div>';
+        const btns = document.createElement('div');
+        btns.className = 'confirm-btns';
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'confirm-btn cancel';
+        cancelBtn.textContent = 'Annuler';
+        const okBtn = document.createElement('button');
+        okBtn.className = 'confirm-btn ok';
+        okBtn.textContent = 'Supprimer';
+        btns.appendChild(cancelBtn);
+        btns.appendChild(okBtn);
+        box.appendChild(btns);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        cancelBtn.addEventListener('click', () => overlay.remove());
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+        okBtn.addEventListener('click', () => { overlay.remove(); deleteFile(file, rowEl); });
     }
 
     async function deleteFile(file, rowEl) {

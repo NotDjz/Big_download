@@ -1300,6 +1300,30 @@ def open_folder():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/open-file/<category>/<filename>')
+def open_file(category, filename):
+    """Ouvre l'explorateur avec le fichier selectionne"""
+    safe_name = sanitize_filename(filename)
+    folder = _resolve_category_folder(category)
+    if not folder:
+        return jsonify({'error': 'Categorie invalide'}), 400
+    file_path = (folder / safe_name).resolve()
+    if not str(file_path).startswith(str(folder.resolve())):
+        return jsonify({'error': 'Acces refuse'}), 403
+    if not file_path.exists():
+        return jsonify({'error': 'Fichier non trouve'}), 404
+    try:
+        if platform.system() == 'Windows':
+            subprocess.Popen(['explorer', '/select,', str(file_path)], **_SUBPROCESS_FLAGS)
+        elif platform.system() == 'Darwin':
+            subprocess.Popen(['open', '-R', str(file_path)])
+        else:
+            subprocess.Popen(['xdg-open', str(file_path.parent)])
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 def _migrate_legacy_folders():
     """Migre les fichiers des anciens dossiers vers la nouvelle structure"""
     migrations = [
