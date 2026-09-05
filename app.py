@@ -18,6 +18,7 @@ _SUBPROCESS_FLAGS = {}
 if platform.system() == 'Windows':
     _SUBPROCESS_FLAGS['creationflags'] = subprocess.CREATE_NO_WINDOW
 from PIL import Image
+import mimetypes
 import shutil
 import stat
 import sys
@@ -34,6 +35,10 @@ app = Flask(__name__,
             template_folder=str(BUNDLE_DIR / "templates"),
             static_folder=str(BUNDLE_DIR / "static"))
 app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2 GB
+
+# Windows ne connait pas .woff2 : sans ca les polices partaient en
+# application/octet-stream.
+mimetypes.add_type('font/woff2', '.woff2')
 
 
 @app.errorhandler(413)

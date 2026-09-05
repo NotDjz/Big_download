@@ -1,0 +1,7 @@
+Archivo — Copyright (c) Omnibus-Type
+Distribuee sous SIL Open Font License 1.1
+https://openfontlicense.org  |  https://fonts.google.com/specimen/Archivo
+
+Fichiers : sous-ensembles latin et latin-ext de la version variable (400-800),
+recuperes depuis fonts.gstatic.com. Embarques dans l'exe parce que l'app
+fonctionne hors-ligne et que la CSP interdit les polices externes.

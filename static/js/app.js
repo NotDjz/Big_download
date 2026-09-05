@@ -17,7 +17,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     loadDownloadsList();
     loadStats();
-    setInterval(() => { loadDownloadsList(); loadStats(); }, 15000);
+    setInterval(() => {
+        // La fiche et l'editeur masquent la bibliotheque (regle :has()) : sans
+        // cette garde, deux requetes et deux parcours de dossiers cote serveur
+        // tournaient pour ne produire aucun pixel.
+        if (!document.getElementById('library').offsetParent) return;
+        loadDownloadsList();
+        loadStats();
+    }, 15000);
 
     document.getElementById('open-folder-btn').addEventListener('click', () => {
         fetch('/open-folder', { method: 'POST' }).catch(() => {});
@@ -30,8 +37,82 @@ document.addEventListener('DOMContentLoaded', () => {
             tab.classList.add('active');
             document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
             document.getElementById('tab-' + tab.dataset.tab).classList.remove('hidden');
+            // La fiche et l'editeur occupent le plan de travail : changer
+            // d'onglet doit le rendre a la bibliotheque, sinon on garde sous
+            // les yeux le panneau de l'onglet qu'on vient de quitter.
+            hideResult();
+            // Masquer sans detruire : resetCutEditor() libere aussi cutState,
+            // le fichier temporaire et la selection. Un aller-retour entre
+            // onglets jetait donc un upload deja termine.
+            const goingToCut = tab.dataset.tab === 'cut';
+            const hasFile = Boolean(cutState.tempName);
+            // Mettre en pause : masquer sans arreter laissait l'audio tourner
+            // derriere un editeur invisible, donc sans aucun bouton pour l'arreter.
+            if (!goingToCut && cutState.media) cutState.media.pause();
+            setCutView(goingToCut && hasFile);
         });
     });
+
+    // Un seul jeu d'icones. Avant, les lignes melangeaient des glyphes
+    // geometriques et des emojis, qui n'ont ni le meme poids ni la meme
+    // couleur ni le meme alignement.
+    // Une seule table pour l'enum que le serveur envoie : la classe CSS, le
+    // libelle et la valeur par defaut etaient exprimes a trois endroits.
+    const MEDIA_KIND = { video: 'Video', audio: 'Audio', photo: 'Photo' };
+
+    // Un span par fait, separes par un noeud texte. Sans le noeud, copier la
+    // ligne donnait un seul mot colle ; sans les spans, le gap CSS n'avait
+    // rien a espacer et le point median restait.
+    // Les trois boutons d'action etaient trois copies du meme bloc, y compris
+    // du stopPropagation que chacun doit faire pour ne pas ouvrir le player.
+    // Memorise l'icone posee pour ne rien reconstruire quand elle ne change pas.
+    function setBtnIcon(btn, name, filled) {
+        if (btn.dataset.icon === name) return;
+        btn.dataset.icon = name;
+        btn.textContent = '';
+        btn.appendChild(svgIcon(name, filled));
+    }
+
+    function actionBtn(icon, title, filled, onClick, extraClass) {
+        const btn = document.createElement('button');
+        btn.className = 'dl-action-btn' + (extraClass ? ' ' + extraClass : '');
+        btn.title = title;
+        btn.appendChild(svgIcon(icon, filled));
+        btn.addEventListener('click', (e) => { e.stopPropagation(); onClick(); });
+        return btn;
+    }
+
+    function metaSpans(el, parts) {
+        el.textContent = '';
+        parts.filter(Boolean).forEach((t, i) => {
+            if (i > 0) el.appendChild(document.createTextNode(' '));
+            const span = document.createElement('span');
+            span.textContent = t;
+            el.appendChild(span);
+        });
+    }
+
+    const SPEAKER = 'M3.5 6.2h2.3L8.5 3.8v8.4L5.8 9.8H3.5z';
+    const ICONS = {
+        play:   'M5 3.5v9l8-4.5z',
+        folder: 'M2 4.5h4l1.2 1.6H14v6.4H2z',
+        close:  'M4 4l8 8M12 4l-8 8',
+        pause:  'M5.5 3.5h2v9h-2zM8.5 3.5h2v9h-2z',
+        vol1:   SPEAKER + 'M10.6 6.4a2.6 2.6 0 010 3.2',
+        vol2:   SPEAKER + 'M10.6 6.4a2.6 2.6 0 010 3.2M12.4 4.8a5 5 0 010 6.4',
+        mute:   SPEAKER + 'M11 6.5l3 3M14 6.5l-3 3',
+    };
+    function svgIcon(name, filled) {
+        const NS = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(NS, 'svg');
+        svg.setAttribute('viewBox', '0 0 16 16');
+        svg.setAttribute('aria-hidden', 'true');
+        const path = document.createElementNS(NS, 'path');
+        path.setAttribute('d', ICONS[name]);
+        if (filled) { path.setAttribute('fill', 'currentColor'); path.setAttribute('stroke', 'none'); }
+        svg.appendChild(path);
+        return svg;
+    }
 
     function detectPlatform(url) {
         if (!url) return null;
@@ -56,7 +137,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (platform) {
             platformBadge.textContent = platform === 'x' ? 'X' : platform;
-            platformBadge.className = 'platform-badge ' + platform;
+            platformBadge.className = 'platform-badge';
             platformBadge.classList.remove('hidden');
         } else {
             platformBadge.classList.add('hidden');
@@ -111,7 +192,7 @@ document.addEventListener('DOMContentLoaded', () => {
             showStatus('Erreur: ' + err.message, 'error');
         } finally {
             goBtn.disabled = false;
-            goBtn.textContent = 'GO';
+            goBtn.textContent = 'Telecharger';
         }
     }
 
@@ -143,7 +224,7 @@ document.addEventListener('DOMContentLoaded', () => {
             showStatus('Erreur: ' + err.message, 'error');
         } finally {
             goBtn.disabled = false;
-            goBtn.textContent = 'GO';
+            goBtn.textContent = 'Telecharger';
         }
     }
 
@@ -176,7 +257,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data.uploader && data.uploader !== 'N/A') parts.push(data.uploader);
         if (data.duration) parts.push(fmtTime(data.duration));
         if (data.platform) parts.push(data.platform.toUpperCase());
-        metaEl.textContent = parts.join(' · ');
+        metaSpans(metaEl, parts);
 
         formatsEl.textContent = '';
         selectedFormat = null;
@@ -268,7 +349,7 @@ document.addEventListener('DOMContentLoaded', () => {
         thumbEl.appendChild(play);
 
         titleEl.textContent = data.title || 'Playlist';
-        metaEl.textContent = (data.uploader || '') + ' · ' + data.video_count + ' videos';
+        metaSpans(metaEl, [data.uploader, data.video_count + ' videos']);
 
         formatsEl.textContent = '';
         selectedFormat = { type: 'playlist', quality: null };
@@ -423,20 +504,28 @@ document.addEventListener('DOMContentLoaded', () => {
         statusMsg.classList.add('hidden');
     }
 
+    // Unites et separateur decimal francais : le reste de l'interface est en
+    // francais, afficher '37.4 MB' au milieu detonnait.
+    // Formateurs hisses : passer un objet d'options a toLocaleString court-circuite
+    // le cache de V8 et reconstruit un Intl.NumberFormat a chaque appel.
+    const NUM0 = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 });
+    const NUM1 = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 1 });
+
     function formatSize(bytes) {
-        if (!bytes) return '0 B';
+        if (!bytes) return '0 o';
         const k = 1024;
-        const units = ['B', 'KB', 'MB', 'GB'];
-        const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + units[i];
+        const units = ['o', 'Ko', 'Mo', 'Go'];
+        const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), units.length - 1);
+        const n = bytes / Math.pow(k, i);
+        return (i === 0 ? NUM0 : NUM1).format(n) + ' ' + units[i];
     }
 
     function timeAgo(timestamp) {
         const diff = Math.floor(Date.now() / 1000 - timestamp);
         if (diff < 60) return 'a l\'instant';
-        if (diff < 3600) return Math.floor(diff / 60) + ' min';
-        if (diff < 86400) return Math.floor(diff / 3600) + 'h';
-        return Math.floor(diff / 86400) + 'j';
+        if (diff < 3600) return 'il y a ' + Math.floor(diff / 60) + ' min';
+        if (diff < 86400) return 'il y a ' + Math.floor(diff / 3600) + ' h';
+        return 'il y a ' + Math.floor(diff / 86400) + ' j';
     }
 
     async function loadDownloadsList() {
@@ -464,10 +553,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const row = document.createElement('div');
                 row.className = 'download-row';
 
-                const icon = document.createElement('div');
-                icon.className = 'dl-icon';
-                icon.textContent = file.media_type === 'audio' ? '♫' : file.media_type === 'photo' ? '🖼' : '▶';
-                row.appendChild(icon);
+                const kind = MEDIA_KIND[file.media_type] ? file.media_type : 'video';
+                row.dataset.type = kind;
 
                 const info = document.createElement('div');
                 info.className = 'dl-info';
@@ -479,11 +566,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const meta = document.createElement('div');
                 meta.className = 'dl-meta';
-                const metaParts = [];
-                metaParts.push(formatSize(file.size));
-                metaParts.push(file.category);
-                if (file.timestamp) metaParts.push(timeAgo(file.timestamp));
-                meta.textContent = metaParts.join(' · ');
+                const parts = [formatSize(file.size), MEDIA_KIND[kind]];
+                if (file.timestamp) parts.push(timeAgo(file.timestamp));
+                metaSpans(meta, parts);
                 info.appendChild(meta);
 
                 row.appendChild(info);
@@ -491,35 +576,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const actions = document.createElement('div');
                 actions.className = 'dl-actions';
 
-                const playBtn = document.createElement('button');
-                playBtn.className = 'dl-action-btn';
-                playBtn.textContent = '▶';
-                playBtn.title = 'Lire';
-                playBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    openPlayer(file);
-                });
-                actions.appendChild(playBtn);
-
-                const locateBtn = document.createElement('button');
-                locateBtn.className = 'dl-action-btn';
-                locateBtn.textContent = '📁';
-                locateBtn.title = 'Ouvrir dans l\'explorateur';
-                locateBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    fetch('/open-file/' + file.category + '/' + encodeURIComponent(file.name), { method: 'POST' });
-                });
-                actions.appendChild(locateBtn);
-
-                const delBtn = document.createElement('button');
-                delBtn.className = 'dl-action-btn delete';
-                delBtn.textContent = '✕';
-                delBtn.title = 'Supprimer';
-                delBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    confirmDelete(file, row);
-                });
-                actions.appendChild(delBtn);
+                actions.appendChild(actionBtn('play', 'Lire', true, () => openPlayer(file)));
+                actions.appendChild(actionBtn('folder', "Ouvrir dans l'explorateur", false,
+                    () => fetch('/open-file/' + file.category + '/' + encodeURIComponent(file.name), { method: 'POST' })));
+                actions.appendChild(actionBtn('close', 'Supprimer', false,
+                    () => confirmDelete(file, row), 'danger'));
 
                 row.appendChild(actions);
 
@@ -630,7 +691,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const pct = media.duration ? (media.currentTime / media.duration) * 100 : 0;
         fill.style.width = pct + '%';
         timeEl.textContent = fmtTime(media.currentTime) + ' / ' + fmtTime(media.duration);
-        playBtn.textContent = media.paused ? '▶' : '⏸';
+        // Ne redessiner qu'au changement : appele depuis la boucle rAF, ce bloc
+        // reconstruisait deux noeuds SVG a chaque image (60/s) pour une icone
+        // qui ne bouge que sur lecture/pause.
+        setBtnIcon(playBtn, media.paused ? 'play' : 'pause', true);
 
         // Ne se replanifier qu'en lecture : la fonction se replanifiait depuis
         // chacun de ses appelants, empilant des chaines que seekAnimFrame ne
@@ -678,13 +742,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const media = getMedia();
         const icon = document.getElementById('player-vol-icon');
         if (!media) return;
-        if (media.muted || media.volume === 0) {
-            icon.innerHTML = '&#128264;';
-        } else if (media.volume < 0.5) {
-            icon.innerHTML = '&#128265;';
-        } else {
-            icon.innerHTML = '&#128266;';
-        }
+        // Meme jeu d'icones que les lignes. Les emojis 128264/5/6 restaient les
+        // seuls glyphes en couleur de l'interface, a cote de traces monochromes.
+        const name = (media.muted || media.volume === 0) ? 'mute'
+                   : media.volume < 0.5 ? 'vol1' : 'vol2';
+        setBtnIcon(icon, name, false);
     }
 
     function togglePlay() {
@@ -726,10 +788,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isPhoto) {
             const img = document.createElement('img');
             img.src = streamUrl;
-            img.style.maxWidth = '100%';
-            img.style.maxHeight = '70vh';
-            img.style.borderRadius = '8px';
-            img.style.objectFit = 'contain';
             container.appendChild(img);
             controls.style.display = 'none';
         } else {
@@ -741,6 +799,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const volSlider = document.getElementById('player-volume');
             el.volume = parseFloat(volSlider.value);
+            // Poser l'icone a l'ouverture : elle n'etait dessinee qu'au premier
+            // reglage du volume, l'entite HTML fournissant l'etat initial. En
+            // passant au SVG, le bouton restait vide jusqu'au premier clic.
+            updateVolIcon();
 
             // 'seeked' couvre le deplacement sur une video en pause, que la
             // boucle rAF ne repeint plus. Pas de 'timeupdate' : il n'ajoute
@@ -753,9 +815,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         titleEl.textContent = file.name;
-        metaEl.textContent = formatSize(file.size) + ' · ' + file.category;
+        // MEDIA_KIND et non file.category : la ligne disait « Video » quand le
+        // player disait « Videos » pour le meme fichier.
+        metaSpans(metaEl, [formatSize(file.size), MEDIA_KIND[file.media_type] || 'Video']);
 
         modal.classList.remove('hidden');
+        // Toujours necessaire : la media query a 820px repasse le body en
+        // overflow:auto, et la page defilait alors derriere le player ouvert.
         document.body.style.overflow = 'hidden';
     };
 
@@ -776,7 +842,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // obligeaient a exposer quatre fonctions sur window et interdisaient une
     // CSP sans 'unsafe-inline'.
     document.getElementById('player-backdrop').addEventListener('click', closePlayer);
-    document.getElementById('player-close-btn').addEventListener('click', closePlayer);
+    const closeBtn = document.getElementById('player-close-btn');
+    setBtnIcon(closeBtn, 'close', false);
+    closeBtn.addEventListener('click', closePlayer);
     document.getElementById('player-play-btn').addEventListener('click', togglePlay);
     document.getElementById('player-vol-icon').addEventListener('click', toggleMute);
 
@@ -934,10 +1002,16 @@ document.addEventListener('DOMContentLoaded', () => {
         setupCutRangeHandles();
     }
 
+    // Un seul endroit ou l'invariant « editeur visible <=> depot masque » est
+    // ecrit ; il l'etait a trois, dans les deux sens.
+    function setCutView(showEditor) {
+        cutEditor.classList.toggle('hidden', !showEditor);
+        cutUploadZone.classList.toggle('hidden', showEditor);
+    }
+
     function resetCutEditor() {
         if (_cutRangeCleanup) _cutRangeCleanup();
-        cutUploadZone.classList.remove('hidden');
-        cutEditor.classList.add('hidden');
+        setCutView(false);
         if (cutState.media) cutState.media.pause();
         cutState = { tempName: null, originalName: null, duration: 0, startPct: 0, endPct: 1, media: null };
         cutFileInput.value = '';
@@ -961,7 +1035,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('cut-playhead').style.left = (pct * 100) + '%';
         document.getElementById('cut-current-time').textContent = fmtTime(cutState.media.currentTime);
         const playBtn = document.getElementById('cut-play-btn');
-        playBtn.textContent = cutState.media.paused ? '▶' : '⏸';
+        setBtnIcon(playBtn, cutState.media.paused ? 'play' : 'pause', true);
         if (cutState.media.currentTime >= cutState.endPct * cutState.duration) {
             cutState.media.pause();
             cutState.media.currentTime = cutState.endPct * cutState.duration;

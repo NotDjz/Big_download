@@ -5,43 +5,79 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BIG DL</title>
     <link rel="icon" type="image/png" href="/static/icon.png">
+    <link rel="preload" href="/static/fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
     <div class="app">
-        <!-- Header -->
-        <header class="header">
-            <div class="logo">BIG DL</div>
-            <div class="tagline">Colle ton lien, c'est tout.</div>
-        </header>
 
-        <!-- Tabs -->
-        <div class="tabs">
-            <button class="tab active" data-tab="download">Telecharger</button>
-            <button class="tab" data-tab="cut">Decouper</button>
-        </div>
+        <!-- ==================== RAIL ==================== -->
+        <aside class="rail">
+            <div class="logo">BIG <span>DL</span></div>
 
-        <!-- ==================== TAB: DOWNLOAD ==================== -->
-        <div id="tab-download" class="tab-content">
-            <!-- Search -->
-            <div class="search-zone">
-                <div class="search-bar">
+            <nav class="tabs">
+                <button class="tab active" data-tab="download">Telecharger</button>
+                <button class="tab" data-tab="cut">Decouper</button>
+            </nav>
+
+            <!-- Panneau : telecharger -->
+            <div id="tab-download" class="tab-content">
+                <div class="search-zone">
                     <input type="text" id="url-input" class="search-input"
-                           placeholder="Colle un lien YouTube, Instagram, TikTok, X..."
+                           placeholder="Colle un lien..."
                            autocomplete="off" spellcheck="false">
                     <div id="platform-badge" class="platform-badge hidden"></div>
-                    <button id="go-btn" class="go-btn">GO</button>
+                    <button id="go-btn" class="go-btn">Telecharger</button>
                 </div>
-                <div class="supported-platforms">
-                    <span>YouTube</span>
-                    <span>Instagram</span>
-                    <span>TikTok</span>
-                    <span>X</span>
-                    <span>SoundCloud</span>
+                <p class="supported-platforms">
+                    <span>YouTube</span><span>Instagram</span><span>TikTok</span><span>X</span><span>SoundCloud</span>
+                </p>
+            </div>
+
+            <!-- Panneau : decouper -->
+            <div id="tab-cut" class="tab-content hidden">
+                <div id="cut-upload-zone" class="cut-upload-zone">
+                    <div class="cut-dropzone" id="cut-dropzone">
+                        <div class="cut-dropzone-text">Glisse un fichier ici</div>
+                        <div class="cut-dropzone-sub">ou clique pour choisir<br>MP4, MP3, MKV, WAV...</div>
+                        <input type="file" id="cut-file-input" accept="video/*,audio/*,.mp3,.mp4,.mkv,.webm,.m4a,.wav,.flac,.ogg,.avi,.mov" hidden>
+                    </div>
                 </div>
             </div>
 
-            <!-- Result (inline, hidden by default) -->
+            <!-- Progression et messages, communs aux deux panneaux -->
+            <div id="progress-zone" class="progress-zone hidden">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <div class="progress-info">
+                    <span id="progress-status">Telechargement...</span>
+                    <span id="progress-percent">0%</span>
+                    <span id="progress-speed"></span>
+                    <span id="progress-eta"></span>
+                </div>
+            </div>
+            <div id="status-msg" class="status-msg hidden"></div>
+
+            <div class="rail-foot">
+                <button id="open-folder-btn" class="open-folder-btn">Ouvrir le dossier</button>
+                <span id="footer-stats"></span>
+            </div>
+        </aside>
+
+        <!-- ==================== PLAN DE TRAVAIL ==================== -->
+        <main class="workspace">
+
+            <!-- Bibliotheque : contenu par defaut -->
+            <section id="library" class="library">
+                <header class="library-head">
+                    <h1>Bibliotheque</h1>
+                    <span class="downloads-count" id="downloads-count"></span>
+                </header>
+                <div id="downloads-list" class="downloads-list"></div>
+            </section>
+
+            <!-- Fiche du lien analyse : prend la place de la bibliotheque -->
             <div id="result-zone" class="result-zone hidden">
                 <div class="result-card">
                     <div class="result-thumb" id="result-thumb">
@@ -55,46 +91,16 @@
                 </div>
             </div>
 
-            <!-- Progress -->
-            <div id="progress-zone" class="progress-zone hidden">
-                <div class="progress-bar">
-                    <div class="progress-fill" id="progress-fill"></div>
-                </div>
-                <div class="progress-info">
-                    <span id="progress-status">Telechargement...</span>
-                    <span id="progress-percent">0%</span>
-                    <span id="progress-speed"></span>
-                    <span id="progress-eta"></span>
-                </div>
-            </div>
-
-            <!-- Status message -->
-            <div id="status-msg" class="status-msg hidden"></div>
-        </div>
-
-        <!-- ==================== TAB: CUT ==================== -->
-        <div id="tab-cut" class="tab-content hidden">
-            <!-- Upload zone -->
-            <div id="cut-upload-zone" class="cut-upload-zone">
-                <div class="cut-dropzone" id="cut-dropzone">
-                    <div class="cut-dropzone-icon">&#9986;</div>
-                    <div class="cut-dropzone-text">Glisse un fichier ici</div>
-                    <div class="cut-dropzone-sub">ou clique pour choisir (MP4, MP3, MKV, WAV...)</div>
-                    <input type="file" id="cut-file-input" accept="video/*,audio/*,.mp3,.mp4,.mkv,.webm,.m4a,.wav,.flac,.ogg,.avi,.mov" hidden>
-                </div>
-            </div>
-
-            <!-- Cut editor (hidden until file loaded) -->
+            <!-- Editeur de decoupe : prend la place de la bibliotheque -->
             <div id="cut-editor" class="cut-editor hidden">
                 <div class="cut-preview">
                     <div id="cut-preview-container" class="cut-preview-container"></div>
                     <div class="cut-preview-controls">
-                        <button id="cut-play-btn" class="player-btn">&#9654;</button>
+                        <button id="cut-play-btn" class="player-btn" aria-label="Lecture">&#9654;</button>
                         <span id="cut-current-time" class="cut-time-display">0:00</span>
                     </div>
                 </div>
 
-                <!-- Range slider -->
                 <div class="cut-range-zone">
                     <div class="cut-range-track" id="cut-range-track">
                         <div class="cut-range-selected" id="cut-range-selected"></div>
@@ -109,7 +115,6 @@
                     </div>
                 </div>
 
-                <!-- Cut info + actions -->
                 <div class="cut-actions">
                     <div class="cut-file-info">
                         <span id="cut-filename"></span>
@@ -123,33 +128,18 @@
                 <div id="cut-status" class="trim-status hidden"></div>
                 <div id="cut-progress-bar" class="cut-progress-bar hidden"><div class="cut-progress-fill"></div></div>
             </div>
-        </div>
 
-        <!-- Downloads list -->
-        <div class="downloads-zone">
-            <div class="downloads-header">
-                <span class="downloads-label">Recents</span>
-                <span class="downloads-count" id="downloads-count"></span>
-                <button id="open-folder-btn" class="open-folder-btn" title="Ouvrir le dossier">📂</button>
-            </div>
-            <div id="downloads-list" class="downloads-list"></div>
-        </div>
-
-        <!-- Footer -->
-        <footer class="footer">
-            <span id="footer-stats"></span>
-            <span>BIG DL</span>
-        </footer>
+        </main>
     </div>
 
-    <!-- Video/Audio Player Modal -->
+    <!-- ==================== PLAYER ==================== -->
     <div id="player-modal" class="modal hidden">
         <div class="modal-backdrop" id="player-backdrop"></div>
         <div class="modal-content">
-            <button class="modal-close" id="player-close-btn">&#10005;</button>
+            <button class="modal-close" id="player-close-btn" aria-label="Fermer"></button>
             <div id="player-container" class="player-container"></div>
             <div class="player-controls" id="player-controls">
-                <button id="player-play-btn" class="player-btn">&#9654;</button>
+                <button id="player-play-btn" class="player-btn" aria-label="Lecture"></button>
                 <div class="player-seek-wrap">
                     <div class="player-seek-bar" id="player-seek-bar">
                         <div class="player-seek-fill" id="player-seek-fill"></div>
@@ -157,7 +147,7 @@
                 </div>
                 <span class="player-time" id="player-time">0:00 / 0:00</span>
                 <div class="player-volume-wrap">
-                    <button class="player-btn player-vol-icon" id="player-vol-icon">&#128266;</button>
+                    <button class="player-btn player-vol-icon" id="player-vol-icon" aria-label="Son"></button>
                     <input type="range" id="player-volume" class="player-volume" min="0" max="1" step="0.05" value="0.1">
                 </div>
             </div>
