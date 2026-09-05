@@ -20,7 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(() => { loadDownloadsList(); loadStats(); }, 15000);
 
     document.getElementById('open-folder-btn').addEventListener('click', () => {
-        fetch('/open-folder').catch(() => {});
+        fetch('/open-folder', { method: 'POST' }).catch(() => {});
     });
 
     // Tab switching
@@ -174,7 +174,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const parts = [];
         if (data.uploader && data.uploader !== 'N/A') parts.push(data.uploader);
-        if (data.duration) parts.push(formatDuration(data.duration));
+        if (data.duration) parts.push(fmtTime(data.duration));
         if (data.platform) parts.push(data.platform.toUpperCase());
         metaEl.textContent = parts.join(' · ');
 
@@ -304,7 +304,9 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (platform === 'youtube') {
             selectedFormat = { type: 'youtube', quality: quality };
         } else {
-            selectedFormat = { type: 'social', quality: null };
+            // la qualite etait mise a null ici : choisir 480p telechargeait
+            // quand meme le flux le plus lourd que la plateforme propose.
+            selectedFormat = { type: 'social', quality: quality };
         }
     }
 
@@ -421,14 +423,6 @@ document.addEventListener('DOMContentLoaded', () => {
         statusMsg.classList.add('hidden');
     }
 
-    function formatDuration(seconds) {
-        const h = Math.floor(seconds / 3600);
-        const m = Math.floor((seconds % 3600) / 60);
-        const s = seconds % 60;
-        if (h > 0) return h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
-        return m + ':' + String(s).padStart(2, '0');
-    }
-
     function formatSize(bytes) {
         if (!bytes) return '0 B';
         const k = 1024;
@@ -513,7 +507,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 locateBtn.title = 'Ouvrir dans l\'explorateur';
                 locateBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    fetch('/open-file/' + file.category + '/' + encodeURIComponent(file.name));
+                    fetch('/open-file/' + file.category + '/' + encodeURIComponent(file.name), { method: 'POST' });
                 });
                 actions.appendChild(locateBtn);
 
@@ -604,7 +598,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Player modal + custom controls
-    let activeMedia = null;
     let seekAnimFrame = null;
 
     function getMedia() {
@@ -625,6 +618,10 @@ document.addEventListener('DOMContentLoaded', () => {
     function updatePlayerUI() {
         const media = getMedia();
         if (!media) return;
+        if (seekAnimFrame) {
+            cancelAnimationFrame(seekAnimFrame);
+            seekAnimFrame = null;
+        }
 
         const fill = document.getElementById('player-seek-fill');
         const timeEl = document.getElementById('player-time');
@@ -635,7 +632,12 @@ document.addEventListener('DOMContentLoaded', () => {
         timeEl.textContent = fmtTime(media.currentTime) + ' / ' + fmtTime(media.duration);
         playBtn.textContent = media.paused ? '▶' : '⏸';
 
-        seekAnimFrame = requestAnimationFrame(updatePlayerUI);
+        // Ne se replanifier qu'en lecture : la fonction se replanifiait depuis
+        // chacun de ses appelants, empilant des chaines que seekAnimFrame ne
+        // pouvait plus annuler - une video en pause repeignait a 60 fps.
+        if (!media.paused && !media.ended) {
+            seekAnimFrame = requestAnimationFrame(updatePlayerUI);
+        }
     }
 
     function setupSeekBar() {
@@ -685,13 +687,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    window.togglePlay = function() {
+    function togglePlay() {
         const media = getMedia();
         if (!media) return;
         if (media.paused) media.play(); else media.pause();
-    };
+    }
 
-    window.toggleMute = function() {
+    function toggleMute() {
         const media = getMedia();
         if (!media) return;
         media.muted = !media.muted;
@@ -707,7 +709,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupSeekBar();
     setupVolume();
 
-    window.openPlayer = function(file) {
+    function openPlayer(file) {
         const modal = document.getElementById('player-modal');
         const container = document.getElementById('player-container');
         const titleEl = document.getElementById('modal-title');
@@ -729,29 +731,23 @@ document.addEventListener('DOMContentLoaded', () => {
             img.style.borderRadius = '8px';
             img.style.objectFit = 'contain';
             container.appendChild(img);
-            activeMedia = null;
-            if (controls) controls.style.display = 'none';
+            controls.style.display = 'none';
         } else {
             const el = document.createElement(isAudio ? 'audio' : 'video');
             el.src = streamUrl;
             el.autoplay = true;
             container.appendChild(el);
-            activeMedia = el;
-            if (controls) controls.style.display = '';
+            controls.style.display = '';
 
             const volSlider = document.getElementById('player-volume');
             el.volume = parseFloat(volSlider.value);
 
-            el.addEventListener('play', updatePlayerUI);
-            el.addEventListener('pause', () => {
-                if (seekAnimFrame) cancelAnimationFrame(seekAnimFrame);
-                updatePlayerUI();
-            });
-            el.addEventListener('ended', () => {
-                if (seekAnimFrame) cancelAnimationFrame(seekAnimFrame);
-                updatePlayerUI();
-            });
-            el.addEventListener('loadedmetadata', updatePlayerUI);
+            // 'seeked' couvre le deplacement sur une video en pause, que la
+            // boucle rAF ne repeint plus. Pas de 'timeupdate' : il n'ajoute
+            // aucune transition et continue de tourner a 4 Hz dans une fenetre
+            // masquee, ou rAF est justement bride a zero.
+            ['play', 'pause', 'ended', 'loadedmetadata', 'seeked']
+                .forEach(ev => el.addEventListener(ev, updatePlayerUI));
 
             updatePlayerUI();
         }
@@ -763,19 +759,26 @@ document.addEventListener('DOMContentLoaded', () => {
         document.body.style.overflow = 'hidden';
     };
 
-    window.closePlayer = function() {
+    function closePlayer() {
         const modal = document.getElementById('player-modal');
         const container = document.getElementById('player-container');
 
         if (seekAnimFrame) cancelAnimationFrame(seekAnimFrame);
         const media = getMedia();
         if (media) media.pause();
-        activeMedia = null;
 
         container.textContent = '';
         modal.classList.add('hidden');
         document.body.style.overflow = '';
-    };
+    }
+
+    // Cablage en JS plutot que par des attributs onclick : ceux-ci
+    // obligeaient a exposer quatre fonctions sur window et interdisaient une
+    // CSP sans 'unsafe-inline'.
+    document.getElementById('player-backdrop').addEventListener('click', closePlayer);
+    document.getElementById('player-close-btn').addEventListener('click', closePlayer);
+    document.getElementById('player-play-btn').addEventListener('click', togglePlay);
+    document.getElementById('player-vol-icon').addEventListener('click', toggleMute);
 
     document.addEventListener('keydown', (e) => {
         const modal = document.getElementById('player-modal');
@@ -809,17 +812,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    function fmtTimeInput(s) {
-        if (!s || !isFinite(s)) return '0:00';
-        s = Math.floor(s);
-        const h = Math.floor(s / 3600);
-        const m = Math.floor((s % 3600) / 60);
-        const sec = s % 60;
-        if (h > 0) return h + ':' + String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0');
-        return m + ':' + String(sec).padStart(2, '0');
-    }
-
-    function followCutProgress(cutId, statusEl, progressBarEl, btn, btnLabel) {
+    function followCutProgress(cutId, statusEl, progressBarEl, btn) {
         const fill = progressBarEl.querySelector('.cut-progress-fill');
         progressBarEl.classList.remove('hidden');
         fill.style.width = '0%';
@@ -836,7 +829,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 statusEl.className = 'trim-status success';
                 setTimeout(() => progressBarEl.classList.add('hidden'), 1500);
                 btn.disabled = false;
-                btn.textContent = btnLabel;
+                btn.textContent = 'Couper';
                 loadDownloadsList();
                 loadStats();
             } else if (ev.status === 'error') {
@@ -845,7 +838,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 statusEl.textContent = ev.message;
                 statusEl.className = 'trim-status error';
                 btn.disabled = false;
-                btn.textContent = btnLabel;
+                btn.textContent = 'Couper';
             }
         };
         es.onerror = () => {
@@ -854,7 +847,7 @@ document.addEventListener('DOMContentLoaded', () => {
             statusEl.textContent = 'Connexion perdue';
             statusEl.className = 'trim-status error';
             btn.disabled = false;
-            btn.textContent = btnLabel;
+            btn.textContent = 'Couper';
         };
     }
 
@@ -966,7 +959,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!cutState.media || !cutState.duration) return;
         const pct = cutState.media.currentTime / cutState.duration;
         document.getElementById('cut-playhead').style.left = (pct * 100) + '%';
-        document.getElementById('cut-current-time').textContent = fmtTimeInput(cutState.media.currentTime);
+        document.getElementById('cut-current-time').textContent = fmtTime(cutState.media.currentTime);
         const playBtn = document.getElementById('cut-play-btn');
         playBtn.textContent = cutState.media.paused ? '▶' : '⏸';
         if (cutState.media.currentTime >= cutState.endPct * cutState.duration) {
@@ -979,10 +972,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const d = cutState.duration || 0;
         const startSec = cutState.startPct * d;
         const endSec = cutState.endPct * d;
-        document.getElementById('cut-label-start').textContent = fmtTimeInput(startSec);
-        document.getElementById('cut-label-end').textContent = fmtTimeInput(endSec);
+        document.getElementById('cut-label-start').textContent = fmtTime(startSec);
+        document.getElementById('cut-label-end').textContent = fmtTime(endSec);
         const dur = endSec - startSec;
-        document.getElementById('cut-label-duration').textContent = dur > 0 ? 'Selection: ' + fmtTimeInput(dur) : '';
+        document.getElementById('cut-label-duration').textContent = dur > 0 ? 'Selection: ' + fmtTime(dur) : '';
     }
 
     function updateCutRange() {
@@ -1106,7 +1099,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             const data = await resp.json();
             if (data.cut_id) {
-                followCutProgress(data.cut_id, statusEl, progressBar, btn, 'Couper');
+                followCutProgress(data.cut_id, statusEl, progressBar, btn);
             } else {
                 statusEl.textContent = data.error || 'Erreur inconnue';
                 statusEl.className = 'trim-status error';

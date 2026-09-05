@@ -12,14 +12,14 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 import requests
 import subprocess
-import subprocess as _sp
 import platform
 
 _SUBPROCESS_FLAGS = {}
 if platform.system() == 'Windows':
-    _SUBPROCESS_FLAGS['creationflags'] = _sp.CREATE_NO_WINDOW
+    _SUBPROCESS_FLAGS['creationflags'] = subprocess.CREATE_NO_WINDOW
 from PIL import Image
 import shutil
+import stat
 import sys
 import webview
 
@@ -41,6 +41,55 @@ def request_entity_too_large(e):
     return jsonify({'error': 'Fichier trop volumineux (max 2 GB)'}), 413
 
 
+# Le serveur ecoute sur la loopback, mais n'importe quelle page web ouverte sur
+# la machine peut l'atteindre. Verifier Host bloque le DNS rebinding (un domaine
+# attaquant repointe sur 127.0.0.1 deviendrait sinon same-origin et pourrait
+# lister, exfiltrer et supprimer les telechargements) ; verifier Origin bloque
+# les POST multipart et les GET a effet de bord declenches par une page tierce.
+PORT = 5555
+ALLOWED_HOSTS = frozenset(f'{h}:{PORT}' for h in ('127.0.0.1', 'localhost'))
+ALLOWED_ORIGINS = frozenset(f'http://{h}' for h in ALLOWED_HOSTS)
+
+
+# 'none' est la navigation de premier niveau : c'est ce que la fenetre pywebview
+# envoie en ouvrant l'app. L'exclure fermerait l'application a elle-meme.
+ALLOWED_FETCH_SITES = frozenset(('same-origin', 'none'))
+
+
+@app.before_request
+def _reject_foreign_origin():
+    if request.host not in ALLOWED_HOSTS:
+        return jsonify({'error': 'Hote non autorise'}), 403
+    origin = request.headers.get('Origin')
+    if origin is not None:
+        if origin not in ALLOWED_ORIGINS:
+            return jsonify({'error': 'Origine non autorisee'}), 403
+        return None
+    # Sans Origin, on ne peut pas conclure : les navigateurs ne l'envoient pas
+    # sur un GET no-cors, donc un <video src="http://127.0.0.1:5555/stream/...">
+    # depuis une page tierce passait la garde et servait d'oracle sur les
+    # fichiers telecharges. Sec-Fetch-Site, lui, est toujours envoye.
+    site = request.headers.get('Sec-Fetch-Site')
+    if site is not None and site not in ALLOWED_FETCH_SITES:
+        return jsonify({'error': 'Origine non autorisee'}), 403
+    return None
+
+
+@app.after_request
+def _security_headers(resp):
+    # frame-ancestors ferme le clickjacking : encadree dans une page tierce,
+    # l'app declenchait ses propres suppressions en same-origin sur deux clics.
+    resp.headers['X-Frame-Options'] = 'DENY'
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    resp.headers.setdefault('Content-Security-Policy', '; '.join((
+        "default-src 'self'",
+        "img-src 'self' https: data:",  # vignettes servies par les plateformes
+        "media-src 'self'",
+        "frame-ancestors 'none'",
+    )))
+    return resp
+
+
 # Logging structuré
 logging.basicConfig(
     level=logging.INFO,
@@ -49,7 +98,7 @@ logging.basicConfig(
 )
 log = logging.getLogger('bigdl')
 
-# Suivi de progression des telechargements (download_id -> {queue, thread, start_time})
+# Suivi de progression des telechargements (download_id -> {queue, start_time})
 download_progress = {}
 # Suivi de progression des decoupes (cut_id -> {queue, thread})
 cut_progress = {}
@@ -58,6 +107,13 @@ cut_progress = {}
 MAX_VIDEO_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
 DOWNLOAD_TIMEOUT = 30 * 60  # 30 minutes max par téléchargement
 MAX_DOWNLOADS_PER_MINUTE = 10
+CUT_TIMEOUT = 10 * 60  # 10 minutes max par decoupe
+SSE_GRACE = 60  # marge laissee au worker pour s'annuler avant que le SSE lache
+TIMEOUT_MSG = f'Timeout: telechargement trop long ({DOWNLOAD_TIMEOUT // 60} min max)'
+
+
+class DownloadTimeout(Exception):
+    """Levee depuis le progress hook pour interrompre reellement yt-dlp."""
 DOWNLOAD_FOLDER = BASE_DIR / "downloads"
 
 if getattr(sys, 'frozen', False) and platform.system() == 'Windows':
@@ -84,14 +140,6 @@ VIDEOS_FOLDER.mkdir(exist_ok=True)
 MUSIC_FOLDER.mkdir(exist_ok=True)
 PHOTOS_FOLDER.mkdir(exist_ok=True)
 
-# Compatibilité anciens dossiers (pour lister les fichiers existants)
-LEGACY_FOLDERS = [
-    DOWNLOAD_FOLDER / "YouTube",
-    DOWNLOAD_FOLDER / "YouTube_MP3",
-    DOWNLOAD_FOLDER / "Reseaux_Sociaux",
-]
-
-
 def _next_versioned_name(folder, stem, ext):
     """Trouve le prochain nom disponible: stem_v2.ext, stem_v3.ext, etc."""
     version = 2
@@ -103,9 +151,18 @@ def _next_versioned_name(folder, stem, ext):
 
 
 def sanitize_filename(filename):
-    """Nettoie le nom de fichier pour éviter les path traversal attacks"""
+    """Nettoie le nom de fichier pour eviter les path traversal attacks.
+
+    Remplacer les separateurs suffit a empecher toute sortie du dossier : prive
+    de separateur, '..' ne designe plus un parent. On ne mutile donc plus les
+    points internes d'un nom legitime ('Wait... What.mp4'), qui ne correspondait
+    autrement plus au fichier ecrit par yt-dlp et renvoyait un 404 a la lecture,
+    a la suppression et a la localisation.
+    """
     filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
-    filename = filename.replace('..', '_')
+    filename = filename.rstrip(' .')
+    if not filename:
+        filename = '_'
     if len(filename) > 200:
         name, ext = os.path.splitext(filename)
         filename = name[:200] + ext
@@ -195,6 +252,13 @@ def _get_format_string(download_type, quality=None):
     if download_type == 'mp3':
         return 'bestaudio/best'
     elif download_type == 'social':
+        # 'best' nu ignorait la qualite choisie : selectionner 480p
+        # telechargeait quand meme le flux le plus lourd disponible.
+        if quality:
+            # Flux progressif uniquement : merge_output_format et le convertisseur
+            # MP4 ne sont poses que pour youtube/playlist, donc un bestvideo+
+            # bestaudio ici sortirait un .mkv/.webm illisible dans le player.
+            return f'best[height<={quality}]/best'
         return 'best'
     elif quality:
         return (
@@ -212,12 +276,7 @@ def _get_format_string(download_type, quality=None):
 
 def _get_output_folder(download_type):
     """Retourne le dossier de sortie selon le type"""
-    if download_type == 'mp3':
-        return MUSIC_FOLDER
-    elif download_type == 'social':
-        return VIDEOS_FOLDER
-    else:
-        return VIDEOS_FOLDER
+    return MUSIC_FOLDER if download_type == 'mp3' else VIDEOS_FOLDER
 
 
 def _get_output_template(download_type, url=''):
@@ -229,9 +288,11 @@ def _get_output_template(download_type, url=''):
     return str(folder / '%(title)s.%(ext)s')
 
 
-def _make_progress_hook(q, current_video=None, total_videos=None):
-    """Cree un progress hook pour yt-dlp"""
+def _make_progress_hook(q, current_video=None, total_videos=None, partials=None):
+    """Cree un progress hook pour yt-dlp."""
     def progress_hook(d):
+        if partials is not None and d.get('tmpfilename'):
+            partials.add(d['tmpfilename'])
         try:
             if d['status'] == 'downloading':
                 total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
@@ -259,7 +320,25 @@ def _make_progress_hook(q, current_video=None, total_videos=None):
     return progress_hook
 
 
-def _build_ydl_opts(download_type, url, quality, progress_hook):
+def _make_deadline_hook(entry):
+    """Garde d'echeance, posee sur les deux familles de hooks.
+
+    Lever depuis un hook est la seule facon d'annuler yt-dlp, qui tourne dans
+    le processus. Le controle vivait avant dans le generateur SSE, ou il
+    n'arretait que le rapport pendant que le thread continuait a telecharger.
+    Les hooks de progression sont muets pendant un merge ou une extraction
+    mp3, d'ou la pose sur les postprocessor_hooks aussi.
+
+    L'echeance est relue dans l'entree du registre a chaque appel : la boucle
+    playlist la repousse video par video, et le filet SSE lit la meme valeur.
+    """
+    def deadline_hook(d):
+        if time.time() > entry['deadline']:
+            raise DownloadTimeout(TIMEOUT_MSG)
+    return deadline_hook
+
+
+def _build_ydl_opts(download_type, url, quality, progress_hook, entry):
     """Construit les options yt-dlp"""
     ydl_opts = {
         'format': _get_format_string(download_type, quality),
@@ -267,7 +346,8 @@ def _build_ydl_opts(download_type, url, quality, progress_hook):
         'quiet': True,
         'no_warnings': True,
         'no_color': True,
-        'progress_hooks': [progress_hook],
+        'progress_hooks': [_make_deadline_hook(entry), progress_hook],
+        'postprocessor_hooks': [_make_deadline_hook(entry)],
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         },
@@ -335,11 +415,11 @@ def _download_instagram_images(q, url):
     """Telecharge les images d'un post Instagram via l'API avec cookies"""
     import http.cookiejar
 
-    q.put_nowait({'status': 'processing', 'message': 'Telechargement image Instagram...'})
+    _put_progress(q, {'status': 'processing', 'message': 'Telechargement image Instagram...'})
 
     cookies_file = _get_cookies_file()
     if not cookies_file:
-        q.put_nowait({
+        _put_final(q, {
             'status': 'error',
             'message': 'Photos Instagram necessitent un fichier cookies.txt (exporte depuis ton navigateur avec l\'extension "Get cookies.txt LOCALLY")'
         })
@@ -355,7 +435,7 @@ def _download_instagram_images(q, url):
             break
 
     if not shortcode:
-        q.put_nowait({'status': 'error', 'message': 'URL Instagram invalide'})
+        _put_final(q, {'status': 'error', 'message': 'URL Instagram invalide'})
         return
 
     media_id = _shortcode_to_media_id(shortcode)
@@ -374,17 +454,17 @@ def _download_instagram_images(q, url):
     try:
         resp = session.get(api_url, timeout=15)
     except Exception as e:
-        q.put_nowait({'status': 'error', 'message': f'Erreur API Instagram: {e}'})
+        _put_final(q, {'status': 'error', 'message': f'Erreur API Instagram: {e}'})
         return
 
     if resp.status_code != 200:
-        q.put_nowait({'status': 'error', 'message': f'API Instagram erreur {resp.status_code}. Cookies peut-etre expires.'})
+        _put_final(q, {'status': 'error', 'message': f'API Instagram erreur {resp.status_code}. Cookies peut-etre expires.'})
         return
 
     data = resp.json()
     items = data.get('items', [])
     if not items:
-        q.put_nowait({'status': 'error', 'message': 'Post Instagram vide ou inaccessible'})
+        _put_final(q, {'status': 'error', 'message': 'Post Instagram vide ou inaccessible'})
         return
 
     item = items[0]
@@ -402,7 +482,7 @@ def _download_instagram_images(q, url):
             image_urls.append(candidates[0]['url'])
 
     if not image_urls:
-        q.put_nowait({'status': 'error', 'message': 'Aucune image trouvee dans le post'})
+        _put_final(q, {'status': 'error', 'message': 'Aucune image trouvee dans le post'})
         return
 
     downloaded = 0
@@ -416,9 +496,9 @@ def _download_instagram_images(q, url):
             temp_filename = f'instagram_{shortcode}{suffix}.tmp'
             temp_filepath = PHOTOS_FOLDER / sanitize_filename(temp_filename)
             temp_filepath.write_bytes(img_resp.content)
-            final_path = _convert_to_jpg(temp_filepath)
+            _convert_to_jpg(temp_filepath)
             downloaded += 1
-            q.put_nowait({
+            _put_progress(q, {
                 'status': 'downloading',
                 'percent': round(i / total * 100, 1),
                 'speed': '',
@@ -431,23 +511,70 @@ def _download_instagram_images(q, url):
         title = f'instagram_{shortcode}'
         if downloaded > 1:
             title += f' ({downloaded} images)'
-        q.put_nowait({
+        _put_final(q, {
             'status': 'complete',
             'title': title,
-            'filename': f'instagram_{shortcode}.jpg',
+            'filename': f'instagram_{shortcode}_1.jpg' if total > 1 else f'instagram_{shortcode}.jpg',
         })
     else:
-        q.put_nowait({'status': 'error', 'message': 'Echec telechargement. Cookies expires ou acces refuse.'})
+        _put_final(q, {'status': 'error', 'message': 'Echec telechargement. Cookies expires ou acces refuse.'})
 
 
-def _cleanup_partial_files(folder, pattern='*.part'):
-    """Supprime les fichiers partiels (.part, .ytdl) dans un dossier"""
-    for ext in ('*.part', '*.ytdl', '*.temp'):
-        for f in folder.glob(ext):
+def _put_progress(q, event):
+    """Publie un evenement de progression, en le jetant si la file est pleine.
+
+    Un put nu remontait dans le gestionnaire generique et avortait toute la
+    playlist avec un message vide (str(queue.Full()) est '').
+    """
+    try:
+        q.put_nowait(event)
+    except queue.Full:
+        pass
+
+
+def _put_final(q, event):
+    """Publie un evenement terminal, meme si la file est pleine.
+
+    put_nowait leve queue.Full quand le client ne draine pas ; l'exception
+    remontait dans le gestionnaire d'erreur generique et, pour Instagram,
+    declenchait a tort le repli photo.
+    """
+    try:
+        q.put_nowait(event)
+        return
+    except queue.Full:
+        pass
+    try:
+        q.get_nowait()  # un seul producteur : liberer une place suffit
+    except queue.Empty:
+        pass
+    try:
+        q.put_nowait(event)
+    except queue.Full:
+        log.warning('Evenement terminal non transmis (file saturee)')
+
+
+def _sweep_old_files(folder, max_age, patterns=('*',)):
+    """Supprime les fichiers d'un dossier plus vieux que max_age.
+
+    La garde d'age est le point subtil : les dossiers sont partages, et un
+    balayage inconditionnel effacait le .part d'un telechargement encore en
+    cours, le faisant echouer.
+    """
+    cutoff = time.time() - max_age
+    for pattern in patterns:
+        for f in folder.glob(pattern):
             try:
-                f.unlink()
+                st = f.stat()
+                if stat.S_ISREG(st.st_mode) and st.st_mtime < cutoff:
+                    f.unlink()
             except OSError:
                 pass
+
+
+def _cleanup_partial_files(folder):
+    """Supprime les fichiers partiels abandonnes dans un dossier de sortie."""
+    _sweep_old_files(folder, 300, ('*.part', '*.ytdl', '*.temp'))
 
 
 def _check_filesize(file_path):
@@ -468,18 +595,20 @@ def _run_download(download_id, url, download_type, quality=None):
         return
     q = entry['queue']
 
+    own_partials = set()
+
     try:
         if download_type == 'playlist':
-            _run_playlist_download(q, url, quality)
+            _run_playlist_download(q, url, quality, entry, own_partials)
         else:
-            hook = _make_progress_hook(q)
-            ydl_opts = _build_ydl_opts(download_type, url, quality, hook)
+            hook = _make_progress_hook(q, partials=own_partials)
+            ydl_opts = _build_ydl_opts(download_type, url, quality, hook, entry)
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
 
                 if info is None:
-                    q.put_nowait({'status': 'error', 'message': "Impossible d'extraire les informations"})
+                    _put_final(q, {'status': 'error', 'message': "Impossible d'extraire les informations"})
                     return
 
                 title = info.get('title', 'media')
@@ -515,8 +644,11 @@ def _run_download(download_id, url, download_type, quality=None):
                     result['height'] = info.get('height', 0)
                     result['fps'] = info.get('fps', 0)
 
-                q.put_nowait(result)
+                _put_final(q, result)
 
+    except DownloadTimeout as e:
+        log.warning(f"Download timeout {url}")
+        _put_final(q, {'status': 'error', 'message': str(e)})
     except Exception as e:
         error_msg = str(e)
         log.error(f"Download failed [{download_type}] {url}: {error_msg}")
@@ -524,14 +656,21 @@ def _run_download(download_id, url, download_type, quality=None):
             try:
                 _download_instagram_images(q, url)
             except Exception as img_err:
-                q.put_nowait({'status': 'error', 'message': f'Video: {error_msg} | Image: {str(img_err)}'})
+                _put_final(q, {'status': 'error', 'message': f'Video: {error_msg} | Image: {str(img_err)}'})
         else:
-            q.put_nowait({'status': 'error', 'message': error_msg})
+            _put_final(q, {'status': 'error', 'message': error_msg})
     finally:
+        # Nos propres fichiers partiels partent tout de suite, meme en echec ;
+        # ceux des autres telechargements sont laisses a la garde d'age.
+        for tmp in own_partials:
+            try:
+                Path(tmp).unlink(missing_ok=True)
+            except OSError:
+                pass
         _cleanup_partial_files(_get_output_folder(download_type))
 
 
-def _run_playlist_download(q, url, quality=None):
+def _run_playlist_download(q, url, quality=None, entry=None, partials=None):
     """Telecharge une playlist video par video avec suivi"""
     # D'abord recuperer la liste des videos
     flat_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True}
@@ -539,7 +678,7 @@ def _run_playlist_download(q, url, quality=None):
         playlist_info = ydl.extract_info(url, download=False)
 
     if not playlist_info:
-        q.put_nowait({'status': 'error', 'message': "Impossible de lire la playlist"})
+        _put_final(q, {'status': 'error', 'message': "Impossible de lire la playlist"})
         return
 
     entries = [e for e in playlist_info.get('entries', []) if e]
@@ -547,45 +686,55 @@ def _run_playlist_download(q, url, quality=None):
     playlist_title = playlist_info.get('title', 'Playlist')
 
     if total == 0:
-        q.put_nowait({'status': 'error', 'message': "Playlist vide"})
+        _put_final(q, {'status': 'error', 'message': "Playlist vide"})
         return
 
-    q.put_nowait({
+    _put_progress(q, {
         'status': 'playlist_start',
         'title': playlist_title,
         'total_videos': total,
     })
 
-    for i, entry in enumerate(entries, 1):
-        video_url = entry.get('url') or entry.get('id')
+    # 'item' et pas 'entry' : le nom masquait le parametre portant l'entree du
+    # registre, donc l'echeance etait ecrite dans le dict de la video yt-dlp et
+    # le filet SSE continuait de lire une valeur jamais repoussee.
+    for i, item in enumerate(entries, 1):
+        video_url = item.get('url') or item.get('id')
         if not video_url:
             continue
 
         if not video_url.startswith('http'):
             video_url = f'https://www.youtube.com/watch?v={video_url}'
 
-        q.put_nowait({
+        _put_progress(q, {
             'status': 'playlist_video_start',
             'current_video': i,
             'total_videos': total,
-            'video_title': entry.get('title', f'Video {i}'),
+            'video_title': item.get('title', f'Video {i}'),
         })
 
-        hook = _make_progress_hook(q, current_video=i, total_videos=total)
-        ydl_opts = _build_ydl_opts('youtube', video_url, quality, hook)
+        # Echeance repoussee a chaque video : un budget global de 30 min
+        # abandonnerait une playlist longue en cours de route, ce qui est un
+        # usage legitime. Le filet SSE lit la meme valeur, donc les deux
+        # couches ne peuvent plus se contredire.
+        entry['deadline'] = time.time() + DOWNLOAD_TIMEOUT
+        hook = _make_progress_hook(q, current_video=i, total_videos=total, partials=partials)
+        ydl_opts = _build_ydl_opts('youtube', video_url, quality, hook, entry)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.extract_info(video_url, download=True)
+        except DownloadTimeout:
+            raise  # sinon chaque video suivante expirerait a son tour
         except Exception as e:
-            q.put_nowait({
+            _put_progress(q, {
                 'status': 'playlist_video_error',
                 'current_video': i,
                 'total_videos': total,
                 'message': str(e),
             })
 
-    q.put_nowait({
+    _put_final(q, {
         'status': 'complete',
         'title': playlist_title,
         'filename': f'{total} videos',
@@ -620,10 +769,9 @@ def start_download():
         if not url:
             return jsonify({'error': 'URL manquante'}), 400
 
-        if download_type in ('youtube', 'playlist') and not validate_youtube_url(url):
-            return jsonify({'error': 'URL YouTube invalide'}), 400
-
         if download_type in ('youtube', 'playlist'):
+            if not validate_youtube_url(url):
+                return jsonify({'error': 'URL YouTube invalide'}), 400
             url = clean_youtube_url(url)
 
         if download_type == 'social':
@@ -633,9 +781,13 @@ def start_download():
 
         download_id = str(uuid.uuid4())
         q = queue.Queue(maxsize=100)
+        now = time.time()
         download_progress[download_id] = {
             'queue': q,
-            'start_time': time.time(),
+            'start_time': now,
+            # Repoussee video par video par la boucle playlist ; lue par les
+            # hooks (qui annulent) et par le filet SSE (qui libere le client).
+            'deadline': now + DOWNLOAD_TIMEOUT,
         }
 
         thread = threading.Thread(
@@ -644,7 +796,6 @@ def start_download():
             daemon=True,
         )
         thread.start()
-        download_progress[download_id]['thread'] = thread
 
         log.info(f"Download started [{download_type}] {url}")
         return jsonify({'download_id': download_id})
@@ -653,34 +804,51 @@ def start_download():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/progress/<download_id>')
-def progress_stream(download_id):
-    """Endpoint SSE pour le suivi de progression"""
+def _sse_response(registry, key, unknown_msg, poll, deadline_key=None):
+    """Draine la queue d'un job et la sert en Server-Sent Events.
+
+    Les deux flux (download, decoupe) etaient deux copies : le correctif de
+    fuite a du etre ecrit deux fois, et les copies avaient deja diverge - seul
+    le download avait recu un filet cote client.
+    """
     def generate():
-        entry = download_progress.get(download_id)
+        entry = registry.get(key)
         if not entry:
-            yield f'data: {json.dumps({"status": "error", "message": "Telechargement inconnu"})}\n\n'
+            yield f'data: {json.dumps({"status": "error", "message": unknown_msg})}\n\n'
             return
         q = entry['queue']
-        start_time = entry['start_time']
-        while True:
-            if time.time() - start_time > DOWNLOAD_TIMEOUT:
-                yield f'data: {json.dumps({"status": "error", "message": "Timeout: telechargement trop long (30 min max)"})}\n\n'
-                break
-            try:
-                event = q.get(timeout=10)
-                yield f'data: {json.dumps(event)}\n\n'
-                if event.get('status') in ('complete', 'error'):
+        try:
+            while True:
+                # Filet de securite. Le worker s'annule desormais lui-meme (hook
+                # yt-dlp ou watchdog FFmpeg) ; on lui laisse SSE_GRACE d'avance,
+                # puis on libere le client plutot que de le laisser attendre.
+                if deadline_key and time.time() > entry[deadline_key] + SSE_GRACE:
+                    yield f'data: {json.dumps({"status": "error", "message": TIMEOUT_MSG})}\n\n'
                     break
-            except queue.Empty:
-                yield f'data: {json.dumps({"status": "heartbeat"})}\n\n'
-        download_progress.pop(download_id, None)
+                try:
+                    event = q.get(timeout=poll)
+                    yield f'data: {json.dumps(event)}\n\n'
+                    if event.get('status') in ('complete', 'error'):
+                        break
+                except queue.Empty:
+                    yield f'data: {json.dumps({"status": "heartbeat"})}\n\n'
+        finally:
+            # finally, sinon une deconnexion client (GeneratorExit) laissait
+            # l'entree et sa queue en memoire definitivement.
+            registry.pop(key, None)
 
     return Response(
         generate(),
         mimetype='text/event-stream',
         headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
     )
+
+
+@app.route('/progress/<download_id>')
+def progress_stream(download_id):
+    """Endpoint SSE pour le suivi de progression"""
+    return _sse_response(download_progress, download_id,
+                         'Telechargement inconnu', poll=10, deadline_key='deadline')
 
 
 @app.route('/')
@@ -822,14 +990,12 @@ def get_video_info():
             quality = f"{height}p" if height > 0 else "Inconnue"
 
         # Extraire les qualites disponibles
-        available_qualities = []
         formats = info.get('formats', [])
-        heights_seen = set()
-        for f in formats:
-            h = f.get('height')
-            if h and f.get('vcodec', 'none') != 'none' and h not in heights_seen:
-                heights_seen.add(h)
-        available_qualities = sorted(heights_seen, reverse=True)
+        available_qualities = sorted(
+            {f['height'] for f in formats
+             if f.get('height') and f.get('vcodec', 'none') != 'none'},
+            reverse=True,
+        )
 
         has_audio = any(
             f.get('acodec', 'none') != 'none'
@@ -1031,6 +1197,17 @@ def stream_file(category, filename):
 def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=None):
     """Execute FFmpeg dans un thread avec progression via stderr."""
     q = cut_progress[cut_id]['queue']
+
+    def fail(message):
+        """Sortie en echec : un seul endroit ou nettoyer."""
+        for path in (out_path, temp_cleanup):
+            if path:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        _put_final(q, {'status': 'error', 'message': message})
+
     try:
         cmd = [
             FFMPEG_PATH, '-y',
@@ -1041,94 +1218,96 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
             '-progress', 'pipe:2',
             str(out_path),
         ]
+        # stdout vers DEVNULL : rien ne le lisait, et un tube jamais draine peut
+        # bloquer FFmpeg des qu'il se remplit.
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             text=True, **_SUBPROCESS_FLAGS,
         )
-        start_time = time.time()
-        current_time = 0.0
-        for line in proc.stderr:
-            if time.time() - start_time > 600:
+
+        # Chien de garde sur un timer : l'echeance etait auparavant evaluee dans
+        # la boucle de lecture, donc un FFmpeg bloque qui n'ecrit plus une seule
+        # ligne sur stderr n'etait jamais tue.
+        timed_out = threading.Event()
+
+        def _kill_stalled():
+            timed_out.set()
+            try:
                 proc.kill()
-                if out_path.exists():
-                    out_path.unlink()
-                if temp_cleanup:
-                    temp_cleanup.unlink(missing_ok=True)
-                q.put({'status': 'error', 'message': 'Timeout: decoupe trop longue'})
-                return
-            if line.startswith('out_time_us='):
-                try:
-                    us = int(line.split('=')[1].strip())
-                    current_time = us / 1_000_000
-                    pct = min(current_time / duration, 1.0) if duration > 0 else 0
-                    q.put({'status': 'progress', 'percent': round(pct * 100, 1)})
-                except (ValueError, ZeroDivisionError):
-                    pass
-        proc.wait()
+            except OSError:
+                pass
+
+        watchdog = threading.Timer(CUT_TIMEOUT, _kill_stalled)
+        watchdog.daemon = True
+        watchdog.start()
+
+        try:
+            for line in proc.stderr:
+                if line.startswith('out_time_us='):
+                    try:
+                        us = int(line.split('=')[1].strip())
+                        pct = min(us / 1_000_000 / duration, 1.0) if duration > 0 else 0
+                        # put_nowait : le retrait de l'entree en finally orpheline
+                        # la queue des que le client part, et un put bloquant
+                        # figeait alors le worker (stderr plus draine, nettoyage
+                        # jamais fait) jusqu'a la fin du processus.
+                        _put_progress(q, {'status': 'progress', 'percent': round(pct * 100, 1)})
+                    except (ValueError, ZeroDivisionError):
+                        pass
+            proc.wait()
+        finally:
+            watchdog.cancel()
+
+        if timed_out.is_set():
+            fail('Timeout: decoupe trop longue')
+            return
 
         if proc.returncode != 0:
-            if out_path.exists():
-                out_path.unlink()
-            if temp_cleanup:
-                temp_cleanup.unlink(missing_ok=True)
-            q.put({'status': 'error', 'message': 'Erreur FFmpeg lors de la decoupe'})
+            fail('Erreur FFmpeg lors de la decoupe')
             return
 
         if temp_cleanup:
             temp_cleanup.unlink(missing_ok=True)
-        log.info(f"Cut done: {out_path.name} ({out_path.stat().st_size / 1024 / 1024:.1f} MB)")
-        q.put({
+        size = out_path.stat().st_size
+        log.info(f"Cut done: {out_path.name} ({size / 1024 / 1024:.1f} MB)")
+        _put_final(q, {
             'status': 'complete',
             'filename': out_path.name,
-            'size': out_path.stat().st_size,
+            'size': size,
             'message': f'Decoupe terminee: {out_path.name}',
         })
     except FileNotFoundError:
-        if temp_cleanup:
-            temp_cleanup.unlink(missing_ok=True)
-        q.put({'status': 'error', 'message': 'FFmpeg non trouve'})
+        fail('FFmpeg non trouve')
     except Exception as e:
-        if out_path.exists():
-            out_path.unlink()
-        if temp_cleanup:
-            temp_cleanup.unlink(missing_ok=True)
         log.error(f"Cut error: {e}")
-        q.put({'status': 'error', 'message': str(e)})
+        fail(str(e))
 
 
 @app.route('/cut-progress/<cut_id>')
 def cut_progress_stream(cut_id):
-    """Endpoint SSE pour le suivi de progression des decoupes."""
-    def generate():
-        entry = cut_progress.get(cut_id)
-        if not entry:
-            yield f'data: {json.dumps({"status": "error", "message": "Decoupe inconnue"})}\n\n'
-            return
-        q = entry['queue']
-        while True:
-            try:
-                event = q.get(timeout=15)
-                yield f'data: {json.dumps(event)}\n\n'
-                if event.get('status') in ('complete', 'error'):
-                    break
-            except queue.Empty:
-                yield f'data: {json.dumps({"status": "heartbeat"})}\n\n'
-        cut_progress.pop(cut_id, None)
-
-    return Response(
-        generate(),
-        mimetype='text/event-stream',
-        headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'},
-    )
+    """Endpoint SSE pour le suivi de progression des decoupes"""
+    return _sse_response(cut_progress, cut_id,
+                         'Decoupe inconnue', poll=15, deadline_key='deadline')
 
 
 TEMP_FOLDER = BASE_DIR / "temp_uploads"
 TEMP_FOLDER.mkdir(exist_ok=True)
 
 
+def _sweep_temp_uploads():
+    """Purge les uploads abandonnes.
+
+    Un fichier n'etait supprime que sur le chemin de la decoupe : abandonner
+    via 'Changer de fichier' le laissait indefiniment sur le disque, jusqu'a
+    2 GB par abandon.
+    """
+    _sweep_old_files(TEMP_FOLDER, 3600)
+
+
 @app.route('/upload-for-cut', methods=['POST'])
 def upload_for_cut():
     """Upload un fichier pour le pre-visualiser avant decoupe"""
+    _sweep_temp_uploads()
     if 'file' not in request.files:
         return jsonify({'error': 'Aucun fichier envoye'}), 400
 
@@ -1207,13 +1386,16 @@ def cut_uploaded():
     ext = temp_path.suffix
 
     audio_exts = ('.mp3', '.m4a', '.wav', '.flac', '.ogg')
-    dest_folder = MUSIC_FOLDER if ext in audio_exts else VIDEOS_FOLDER
+    dest_folder = MUSIC_FOLDER if ext.lower() in audio_exts else VIDEOS_FOLDER
     out_name = _next_versioned_name(dest_folder, stem, ext)
     out_path = dest_folder / out_name
 
     cut_id = str(uuid.uuid4())[:8]
     duration = end - start
-    cut_progress[cut_id] = {'queue': queue.Queue(maxsize=200)}
+    cut_progress[cut_id] = {
+        'queue': queue.Queue(maxsize=200),
+        'deadline': time.time() + CUT_TIMEOUT,
+    }
     thread = threading.Thread(
         target=_run_ffmpeg_cut,
         args=(cut_id, temp_path, out_path, start, duration, temp_path),
@@ -1241,7 +1423,7 @@ def _get_media_duration(filepath):
     return 0
 
 
-@app.route('/open-folder')
+@app.route('/open-folder', methods=['POST'])
 def open_folder():
     """Ouvre le dossier de telechargements dans l'explorateur"""
     folder = str(DOWNLOAD_FOLDER.resolve())
@@ -1249,7 +1431,7 @@ def open_folder():
         if platform.system() == 'Windows':
             os.startfile(folder)
         elif platform.system() == 'Darwin':
-            subprocess.Popen(['open', str(folder)])
+            subprocess.Popen(['open', folder])
         else:
             subprocess.Popen(['xdg-open', str(folder)])
         return jsonify({'success': True})
@@ -1257,7 +1439,7 @@ def open_folder():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/open-file/<category>/<filename>')
+@app.route('/open-file/<category>/<filename>', methods=['POST'])
 def open_file(category, filename):
     """Ouvre l'explorateur avec le fichier selectionne"""
     safe_name = sanitize_filename(filename)
@@ -1320,7 +1502,7 @@ if __name__ == '__main__':
     _migrate_legacy_folders()
 
     flask_thread = threading.Thread(
-        target=lambda: app.run(debug=False, host='127.0.0.1', port=5555, threaded=True),
+        target=lambda: app.run(debug=False, host='127.0.0.1', port=PORT, threaded=True),
         daemon=True,
     )
     flask_thread.start()
@@ -1328,14 +1510,14 @@ if __name__ == '__main__':
     import socket
     for _ in range(50):
         try:
-            with socket.create_connection(('127.0.0.1', 5555), timeout=0.2):
+            with socket.create_connection(('127.0.0.1', PORT), timeout=0.2):
                 break
         except OSError:
             time.sleep(0.1)
 
     webview.create_window(
         'Big Downloader',
-        'http://localhost:5555',
+        f'http://localhost:{PORT}',
         width=1100,
         height=800,
         min_size=(800, 600),

@@ -144,12 +144,12 @@
 
     <!-- Video/Audio Player Modal -->
     <div id="player-modal" class="modal hidden">
-        <div class="modal-backdrop" onclick="closePlayer()"></div>
+        <div class="modal-backdrop" id="player-backdrop"></div>
         <div class="modal-content">
-            <button class="modal-close" onclick="closePlayer()">&#10005;</button>
+            <button class="modal-close" id="player-close-btn">&#10005;</button>
             <div id="player-container" class="player-container"></div>
             <div class="player-controls" id="player-controls">
-                <button id="player-play-btn" class="player-btn" onclick="togglePlay()">&#9654;</button>
+                <button id="player-play-btn" class="player-btn">&#9654;</button>
                 <div class="player-seek-wrap">
                     <div class="player-seek-bar" id="player-seek-bar">
                         <div class="player-seek-fill" id="player-seek-fill"></div>
@@ -157,7 +157,7 @@
                 </div>
                 <span class="player-time" id="player-time">0:00 / 0:00</span>
                 <div class="player-volume-wrap">
-                    <button class="player-btn player-vol-icon" id="player-vol-icon" onclick="toggleMute()">&#128266;</button>
+                    <button class="player-btn player-vol-icon" id="player-vol-icon">&#128266;</button>
                     <input type="range" id="player-volume" class="player-volume" min="0" max="1" step="0.05" value="0.1">
                 </div>
             </div>
