@@ -2,6 +2,10 @@
 
 Telecharge des videos, audios et photos depuis YouTube, Instagram, TikTok, X/Twitter et SoundCloud. Decoupe tes fichiers audio/video avec un editeur visuel integre.
 
+![L'interface de BIG DL : rail d'action a gauche, bibliotheque a droite](docs/screenshot.png)
+
+*Bibliotheque de demonstration.*
+
 ## Fonctionnalites
 
 - **YouTube** — video (jusqu'a 4K), audio MP3, shorts, playlists
@@ -10,6 +14,7 @@ Telecharge des videos, audios et photos depuis YouTube, Instagram, TikTok, X/Twi
 - **X / Twitter** — videos
 - **SoundCloud** — audio MP3
 - **Decoupe** — onglet dedie pour couper un fichier audio/video avec un slider visuel, precision a la frame
+- **Bibliotheque** — tout ce qui a ete telecharge, avec lecture integree, ouverture dans l'explorateur et suppression
 
 ## Installation
 

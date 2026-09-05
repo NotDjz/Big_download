@@ -11,6 +11,7 @@ ENV/
 # Downloads
 downloads/
 temp_uploads/
+.work/
 
 # Cookies (sensitive)
 cookies.txt

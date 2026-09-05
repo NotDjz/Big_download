@@ -46,9 +46,9 @@ Deux formes selon le runtime, et c'est voulu :
 
 - Formats (`_get_format_string`) : `bestvideo+bestaudio` sans contrainte de conteneur en priorite — c'est ce qui debloque la 4K (VP9/AV1) — puis fallback mp4/m4a. Le postprocessor `FFmpegVideoConvertor` reconvertit en MP4.
 - Pour `social`, la qualite est honoree mais **uniquement sur un flux progressif** (`best[height<=N]/best`) : `merge_output_format` et le convertisseur MP4 ne sont poses que pour `youtube`/`playlist`, donc un `bestvideo+bestaudio` ici sortirait un `.mkv`/`.webm` illisible dans le player WebView2.
-- `download_type` : `youtube` | `mp3` | `social` | `playlist`. Le type pilote a la fois le format, le dossier de sortie et le template de nom (`_get_output_template` : `platform_%(id)s` pour `social`, `%(title)s` sinon).
+- `download_type` : `youtube` | `mp3` | `social` | `playlist` | `photo`. Le type pilote a la fois le format, le dossier de sortie et le template de nom (`_get_output_template` : `platform_%(id)s` pour `social`, `%(title)s` sinon).
 - **Playlists** : `_run_playlist_download` fait un `extract_flat` puis telecharge video par video, en emettant `playlist_start` / `playlist_video_start` / `playlist_video_error`. Une video en echec n'interrompt pas la playlist.
-- **Instagram photos** : le chemin nominal yt-dlp echoue sur les posts photo. `_run_download` rattrape l'exception et, si la plateforme est Instagram, bascule sur `_download_instagram_images` — API privee Instagram via `_shortcode_to_media_id` + cookies. Necessite `cookies.txt` ou `www.instagram.com_cookies.txt` dans `BASE_DIR`. Les images sont converties en JPG (Pillow) et deplacees dans `Photos/`.
+- **Instagram photos** : `download_type: 'photo'` est une **strategie choisie en amont**, pas un rattrapage. `_run_download` appelle directement `_download_instagram_images` sans passer par yt-dlp. **Il n'y a plus de repli automatique** : pour un post video, l'API Instagram renvoie aussi la vignette, donc le filet « reussissait » en livrant un JPG de couverture annonce comme un telechargement complet. Un echec de video est desormais un echec. Le telechargeur utilise l'API privee Instagram via `_shortcode_to_media_id` + cookies. Necessite `cookies.txt` ou `www.instagram.com_cookies.txt` dans `BASE_DIR`. Les images sont converties en JPG (Pillow) et deplacees dans `Photos/`.
 
 ### Decoupe
 
@@ -59,9 +59,15 @@ Deux formes selon le runtime, et c'est voulu :
 - `temp_cleanup` supprime le fichier temporaire sur tous les chemins de sortie, via la closure `fail()` — succes, erreur FFmpeg, timeout, exception.
 - `_sweep_temp_uploads()` (appele a chaque upload) purge les fichiers de plus d'une heure : abandonner une decoupe via « Changer de fichier » laissait sinon jusqu'a 2 GB sur le disque indefiniment.
 
-### Nettoyage des fichiers temporaires
+### Fichiers intermediaires : un dossier par job
 
-`_sweep_old_files(folder, max_age, patterns)` est le seul balayage ; `_cleanup_partial_files` et `_sweep_temp_uploads` en sont deux appels. **La garde d'age est le point subtil** : les dossiers de sortie sont partages, et un balayage inconditionnel effacait le `.part` d'un telechargement encore en cours. En complement, chaque download suit ses propres fichiers partiels (`own_partials`, alimente par `d['tmpfilename']`) et les supprime tout de suite meme en echec — la garde d'age ne peut pas les atteindre.
+Chaque telechargement travaille dans `.work/<download_id>/`, detruit par un `shutil.rmtree` dans le `finally` — succes comme echec. C'est ce qui remplace l'ancien duo « suivi de nos propres `.part` + balayage par age des dossiers de sortie », qui devinait a 5 minutes pres lesquels appartenaient a un autre telechargement.
+
+**Le piege a connaitre** : `outtmpl` doit rester **relatif**, le dossier venant de `paths['home']`. yt-dlp **ignore silencieusement `paths` quand `outtmpl` est un chemin absolu** — verifie a la mesure : avec un outtmpl absolu, `prepare_filename(info, dir_type='temp')` retombe sur le dossier final. Repasser `outtmpl` en absolu remettrait donc tous les `.part` dans `downloads/Videos/` sans aucun message d'erreur.
+
+`.work/` est sur le meme volume que les dossiers de sortie pour que le deplacement final reste un renommage — mesure : `shutil.move` y est constant en taille (0,21 ms pour 256 Mo comme pour 1 Go), donc c'est bien un renommage de metadonnees.
+
+**`_sweep_work_folder()` au demarrage n'est pas optionnel** : les threads de telechargement sont `daemon`, donc fermer la fenetre pendant un telechargement tue le worker **sans executer son `finally`**, et laisse son dossier de travail — jusqu'a 5 Go — dans un dossier cache que personne n'ouvre. Le seuil (`DOWNLOAD_TIMEOUT + SSE_GRACE`) depasse la duree de vie maximale d'un job, donc le balayage ne peut jamais atteindre un travail en cours.
 
 ### Frontend
 
@@ -75,16 +81,14 @@ Deux formes selon le runtime, et c'est voulu :
 | Route | Role |
 |---|---|
 | `POST /start-download` → `GET /progress/<id>` | download (SSE) |
-| `POST /get-info` | metadonnees + qualites dispo ; fallback "post photo" si Instagram echoue |
-| `POST /get-playlist-info` | metadonnees playlist |
+| `POST /get-info` | metadonnees + qualites dispo. **Seul point d'entree** : il bascule lui-meme en extraction plate si `is_playlist_url()` reconnait une playlist, et renvoie `is_playlist`. Le client choisissait l'endpoint sur sa propre detection, qui pouvait contredire celle du serveur. |
 | `POST /upload-for-cut` | upload vers `temp_uploads/` (validation format + duree ffprobe) |
 | `GET /stream-temp/<filename>` | preview du fichier uploade avant decoupe |
 | `POST /cut-uploaded` → `GET /cut-progress/<id>` | decoupe (SSE) |
-| `GET /list-downloads`, `GET /get-stats` | listing et stats |
+| `GET /list-downloads` | listing ; le pied de page en derive. Les extensions partielles (`.part`, `.ytdl`, `.temp`, `.tmp`) sont filtrees : elles s'affichaient comme des lignes ouvrables et le player echouait dessus. |
 | `GET /stream/<category>/<filename>` | lecture inline dans le player |
 | `DELETE /delete/<category>/<filename>` | suppression |
 | `POST /open-folder`, `POST /open-file/<category>/<filename>` | explorateur Windows (`explorer /select,`). **POST et pas GET** : un GET est cense etre sans effet, or ces deux-la lancent un process — n'importe quel `<img src>` les declenchait. |
-| `GET /downloads/<category>/<filename>` | telechargement `as_attachment` — **plus aucun appelant** depuis que le bouton download a ete remplace par l'explorateur (commit 35faee1) |
 
 ## Securite des paths
 
@@ -166,5 +170,6 @@ gh release create vX.Y dist/BigDownloader.exe --title "..." --notes "..."
 - L'UI et les messages sont en francais.
 - Les cookies Instagram ne doivent JAMAIS etre commites (dans .gitignore).
 - `CLAUDE.md` figure dans `.gitignore` mais reste suivi par git (ajoute avant la regle) — il est bien versionne.
+- `explorer` est lance par chemin absolu (`%SystemRoot%\explorer.exe`) : `CreateProcess` cherche d'abord dans le dossier de l'image, celui-la meme ou l'exe portable ecrit `downloads/` et `cookies.txt`.
 - pywebview utilise Edge WebView2 sur Windows. Les branches Darwin/Linux subsistent dans `open_folder` / `open_file` mais ne sont plus testees (scripts Linux retires, commit db3c540).
 - Le volume du lecteur demarre a 10% par defaut.

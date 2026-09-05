@@ -69,6 +69,11 @@ async function main() {
   const pickable = await js(
     "fetch('/list-downloads').then(r=>r.json()).then(f=>f.findIndex(x=>x.media_type!=='photo'))");
   const idx = pickable.val;
+  if (idx < 0) {
+    console.log('  [SAUTE] downloads/ ne contient que des photos : le player a besoin d un media');
+    ws.close();
+    return null;
+  }
   const openPlayer = async () => {
     await js(`document.querySelectorAll('.download-row')[${idx}].click()`);
     await sleep(1400);
@@ -79,7 +84,7 @@ async function main() {
   if (!rows) {
     console.log('  [SAUTE] aucun fichier dans downloads/ : le test a besoin d une video ou d un audio');
     ws.close();
-    return { skipped: true, results: [] };
+    return null;  // sentinelle : un tableau vide sortirait en 0, donc vert
   }
   check('liste des telechargements remplie', rows > 0, `${rows} lignes`);
 
@@ -164,5 +169,10 @@ async function main() {
 }
 
 main()
-  .then((results) => process.exit(results.every((r) => r.ok) ? 0 : 1))
+  .then((results) => {
+    // Code 3 pour un saut : sortir en 0 ferait passer pour un succes une
+    // execution ou aucune assertion n'a tourne.
+    if (results === null) process.exit(3);
+    process.exit(results.every((r) => r.ok) ? 0 : 1);
+  })
   .catch((e) => { console.log(`  [ECHEC] harnais : ${e}`); process.exit(2); });

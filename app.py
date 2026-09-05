@@ -40,6 +40,13 @@ app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2 GB
 # application/octet-stream.
 mimetypes.add_type('font/woff2', '.woff2')
 
+# Chemin absolu plutot que le nom nu : CreateProcess cherche d'abord dans le
+# dossier de l'image, qui est aussi celui ou l'exe portable ecrit downloads/,
+# temp_uploads/ et cookies.txt. Un explorer.exe depose la serait lance a notre
+# place. L'attaquant doit deja executer du code sous la meme identite pour l'y
+# poser, donc ce n'est pas une faille — c'est deux lignes de durcissement.
+EXPLORER = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'explorer.exe')
+
 
 @app.errorhandler(413)
 def request_entity_too_large(e):
@@ -140,10 +147,15 @@ _rate_lock = threading.Lock()
 VIDEOS_FOLDER = DOWNLOAD_FOLDER / "Videos"
 MUSIC_FOLDER = DOWNLOAD_FOLDER / "Music"
 PHOTOS_FOLDER = DOWNLOAD_FOLDER / "Photos"
+# Espace de travail des telechargements : un sous-dossier par job, detruit a
+# la fin. Sur le meme volume que les dossiers de sortie pour que le
+# deplacement final de yt-dlp reste un renommage.
+WORK_FOLDER = BASE_DIR / ".work"
 
 VIDEOS_FOLDER.mkdir(exist_ok=True)
 MUSIC_FOLDER.mkdir(exist_ok=True)
 PHOTOS_FOLDER.mkdir(exist_ok=True)
+WORK_FOLDER.mkdir(exist_ok=True)
 
 def _next_versioned_name(folder, stem, ext):
     """Trouve le prochain nom disponible: stem_v2.ext, stem_v3.ext, etc."""
@@ -194,14 +206,25 @@ def validate_youtube_url(url):
 
 
 def is_playlist_url(url):
-    """Detecte si l'URL est une playlist YouTube"""
-    if not url:
+    """Vrai si l'URL designe une playlist entiere, pas une video qui en fait partie.
+
+    'youtu.be/<id>?list=<pl>' et 'watch?v=<id>&list=<pl>' sont les liens de
+    partage d'UNE video vue depuis une playlist : les traiter comme des
+    playlists telechargeait tout l'album au lieu du morceau demande.
+    """
+    try:
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        if 'v' in params:
+            return False
+        # youtu.be/<id> porte l'identifiant dans le chemin
+        if parsed.netloc.endswith('youtu.be') and parsed.path.strip('/'):
+            return False
+        if 'playlist' in parsed.path:
+            return True
+        return 'list' in params
+    except Exception:
         return False
-    if 'youtube.com/playlist' in url:
-        return True
-    parsed = urlparse(url)
-    params = parse_qs(parsed.query)
-    return 'list' in params and 'v' not in params
 
 
 def clean_youtube_url(url):
@@ -284,20 +307,22 @@ def _get_output_folder(download_type):
     return MUSIC_FOLDER if download_type == 'mp3' else VIDEOS_FOLDER
 
 
-def _get_output_template(download_type, url=''):
-    """Retourne le template de nom de fichier"""
-    folder = _get_output_folder(download_type)
+def _get_output_template(download_type, url):
+    """Retourne le template de nom, *relatif*.
+
+    Relatif et non absolu : yt-dlp ignore silencieusement l'option 'paths'
+    quand outtmpl est un chemin absolu (verifie — avec un outtmpl absolu, le
+    dossier temporaire retombe sur le dossier final). Le dossier vient donc de
+    paths['home'], pose par _build_ydl_opts.
+    """
     if download_type == 'social':
-        plat = detect_platform(url)
-        return str(folder / f'{plat}_%(id)s.%(ext)s')
-    return str(folder / '%(title)s.%(ext)s')
+        return f'{detect_platform(url)}_%(id)s.%(ext)s'
+    return '%(title)s.%(ext)s'
 
 
-def _make_progress_hook(q, current_video=None, total_videos=None, partials=None):
+def _make_progress_hook(q, current_video=None, total_videos=None):
     """Cree un progress hook pour yt-dlp."""
     def progress_hook(d):
-        if partials is not None and d.get('tmpfilename'):
-            partials.add(d['tmpfilename'])
         try:
             if d['status'] == 'downloading':
                 total = d.get('total_bytes') or d.get('total_bytes_estimate') or 0
@@ -343,11 +368,15 @@ def _make_deadline_hook(entry):
     return deadline_hook
 
 
-def _build_ydl_opts(download_type, url, quality, progress_hook, entry):
+def _build_ydl_opts(download_type, url, quality, progress_hook, entry, job_tmp):
     """Construit les options yt-dlp"""
     ydl_opts = {
         'format': _get_format_string(download_type, quality),
         'outtmpl': _get_output_template(download_type, url),
+        # Les fichiers intermediaires vont dans un dossier qui n'appartient
+        # qu'a ce job : plus besoin de suivre nos propres .part ni de deviner,
+        # a la garde d'age, lesquels appartiennent a un autre telechargement.
+        'paths': {'home': str(_get_output_folder(download_type)), 'temp': str(job_tmp)},
         'quiet': True,
         'no_warnings': True,
         'no_color': True,
@@ -486,6 +515,14 @@ def _download_instagram_images(q, url):
         if candidates:
             image_urls.append(candidates[0]['url'])
 
+    # Un post video porte aussi image_versions2 (sa vignette) : sans ce test,
+    # on enregistrait l'image de couverture en annoncant un telechargement
+    # complet a quelqu'un qui avait demande une video.
+    if item.get('video_versions') or any(m.get('video_versions') for m in (item.get('carousel_media') or [])):
+        _put_final(q, {'status': 'error',
+                       'message': 'Ce post contient une video : choisis le format video.'})
+        return
+
     if not image_urls:
         _put_final(q, {'status': 'error', 'message': 'Aucune image trouvee dans le post'})
         return
@@ -559,27 +596,29 @@ def _put_final(q, event):
         log.warning('Evenement terminal non transmis (file saturee)')
 
 
-def _sweep_old_files(folder, max_age, patterns=('*',)):
-    """Supprime les fichiers d'un dossier plus vieux que max_age.
+def _sweep_old_files(folder, max_age):
+    """Supprime les entrees d'un dossier plus vieilles que max_age.
+
+    Fichiers et dossiers : les threads de telechargement sont daemon, donc
+    fermer la fenetre pendant un telechargement tue le worker sans executer
+    son finally, et laisse son dossier de travail derriere lui.
 
     La garde d'age est le point subtil : les dossiers sont partages, et un
     balayage inconditionnel effacait le .part d'un telechargement encore en
     cours, le faisant echouer.
     """
     cutoff = time.time() - max_age
-    for pattern in patterns:
-        for f in folder.glob(pattern):
-            try:
-                st = f.stat()
-                if stat.S_ISREG(st.st_mode) and st.st_mtime < cutoff:
-                    f.unlink()
-            except OSError:
-                pass
-
-
-def _cleanup_partial_files(folder):
-    """Supprime les fichiers partiels abandonnes dans un dossier de sortie."""
-    _sweep_old_files(folder, 300, ('*.part', '*.ytdl', '*.temp'))
+    for f in folder.glob('*'):
+        try:
+            st = f.stat()
+            if st.st_mtime >= cutoff:
+                continue
+            if stat.S_ISDIR(st.st_mode):
+                shutil.rmtree(f, ignore_errors=True)
+            else:
+                f.unlink()
+        except OSError:
+            pass
 
 
 def _check_filesize(file_path):
@@ -600,14 +639,27 @@ def _run_download(download_id, url, download_type, quality=None):
         return
     q = entry['queue']
 
-    own_partials = set()
+    # Espace de travail prive, sur le meme volume que les dossiers de sortie
+    # pour que le deplacement final reste un renommage.
+    job_tmp = WORK_FOLDER / download_id
 
     try:
-        if download_type == 'playlist':
-            _run_playlist_download(q, url, quality, entry, own_partials)
+        if download_type != 'photo':
+            # Les photos vont droit dans PHOTOS_FOLDER et ne voient jamais ce
+            # dossier : le creer serait deux operations disque pour rien.
+            job_tmp.mkdir(parents=True, exist_ok=True)
+
+        if download_type == 'photo':
+            # Choisie en amont plutot que deduite d'un echec : le repli sur
+            # exception se declenchait aussi sur un cookie expire, un timeout
+            # ou une coupure reseau pendant une *video* Instagram, et rendait
+            # alors un message decrivant une operation jamais demandee.
+            _download_instagram_images(q, url)
+        elif download_type == 'playlist':
+            _run_playlist_download(q, url, quality, entry, job_tmp)
         else:
-            hook = _make_progress_hook(q, partials=own_partials)
-            ydl_opts = _build_ydl_opts(download_type, url, quality, hook, entry)
+            hook = _make_progress_hook(q)
+            ydl_opts = _build_ydl_opts(download_type, url, quality, hook, entry, job_tmp)
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -657,25 +709,18 @@ def _run_download(download_id, url, download_type, quality=None):
     except Exception as e:
         error_msg = str(e)
         log.error(f"Download failed [{download_type}] {url}: {error_msg}")
-        if detect_platform(url) == 'instagram':
-            try:
-                _download_instagram_images(q, url)
-            except Exception as img_err:
-                _put_final(q, {'status': 'error', 'message': f'Video: {error_msg} | Image: {str(img_err)}'})
-        else:
-            _put_final(q, {'status': 'error', 'message': error_msg})
+        # Plus de repli automatique sur les images. Pour un post video,
+        # l'API Instagram renvoie quand meme la vignette : le repli
+        # 'reussissait' alors en livrant un JPG de couverture annonce comme un
+        # telechargement complet. Les photos ont desormais leur propre type.
+        _put_final(q, {'status': 'error', 'message': error_msg})
     finally:
-        # Nos propres fichiers partiels partent tout de suite, meme en echec ;
-        # ceux des autres telechargements sont laisses a la garde d'age.
-        for tmp in own_partials:
-            try:
-                Path(tmp).unlink(missing_ok=True)
-            except OSError:
-                pass
-        _cleanup_partial_files(_get_output_folder(download_type))
+        # Un seul geste, et il couvre l'echec comme le succes : le dossier
+        # n'appartient qu'a ce job, donc rien d'autre ne peut s'y trouver.
+        shutil.rmtree(job_tmp, ignore_errors=True)
 
 
-def _run_playlist_download(q, url, quality=None, entry=None, partials=None):
+def _run_playlist_download(q, url, quality, entry, job_tmp):
     """Telecharge une playlist video par video avec suivi"""
     # D'abord recuperer la liste des videos
     flat_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True}
@@ -723,8 +768,8 @@ def _run_playlist_download(q, url, quality=None, entry=None, partials=None):
         # usage legitime. Le filet SSE lit la meme valeur, donc les deux
         # couches ne peuvent plus se contredire.
         entry['deadline'] = time.time() + DOWNLOAD_TIMEOUT
-        hook = _make_progress_hook(q, current_video=i, total_videos=total, partials=partials)
-        ydl_opts = _build_ydl_opts('youtube', video_url, quality, hook, entry)
+        hook = _make_progress_hook(q, current_video=i, total_videos=total)
+        ydl_opts = _build_ydl_opts('youtube', video_url, quality, hook, entry, job_tmp)
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -783,6 +828,9 @@ def start_download():
             plat = detect_platform(url)
             if plat not in ('instagram', 'tiktok', 'x', 'facebook'):
                 return jsonify({'error': f'Plateforme {plat} non supportee'}), 400
+
+        if download_type == 'photo' and detect_platform(url) != 'instagram':
+            return jsonify({'error': 'Les photos ne sont supportees que sur Instagram'}), 400
 
         download_id = str(uuid.uuid4())
         q = queue.Queue(maxsize=100)
@@ -863,49 +911,60 @@ def index():
 
 
 # ==================== PLAYLISTS ====================
-@app.route('/get-playlist-info', methods=['POST'])
-def get_playlist_info():
-    """Recupere les informations d'une playlist YouTube"""
-    try:
-        data = request.get_json()
-        url = data.get('url')
+def _instagram_photo_stub():
+    """Reponse /get-info pour un post Instagram dont l'extraction echoue.
 
-        if not url:
-            return jsonify({'error': 'URL manquante'}), 400
+    Le meme dict de 15 cles etait ecrit deux fois dans la meme fonction, sur
+    la branche exception et sur la branche 'info is None'.
+    """
+    return {
+        'success': True,
+        'title': 'Post Instagram',
+        'duration': 0,
+        'thumbnail': '',
+        'uploader': '',
+        'platform': 'instagram',
+        'resolution': '',
+        'width': 0,
+        'height': 0,
+        'fps': 0,
+        'available_qualities': [],
+        'has_audio': False,
+        'is_playlist': False,
+        'video_count': 0,
+        '_is_photo': True,
+    }
 
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'extract_flat': True,
-        }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+def _playlist_info(url):
+    """Metadonnees d'une playlist, en extraction plate.
 
-            if info is None:
-                raise Exception("Impossible d'extraire les informations de la playlist")
+    Interne et non plus une route : le client choisissait l'endpoint sur sa
+    propre detection d'URL, qui pouvait contredire celle du serveur — la
+    requete partait alors au mauvais extracteur et l'echec etait opaque.
+    C'est desormais /get-info qui tranche, avec is_playlist_url().
+    """
+    with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'extract_flat': True}) as ydl:
+        info = ydl.extract_info(url, download=False)
 
-            entries = info.get('entries', [])
-            videos = []
-            for entry in entries:
-                if entry:
-                    videos.append({
-                        'title': entry.get('title', 'Sans titre'),
-                        'duration': entry.get('duration', 0),
-                        'url': entry.get('url', ''),
-                    })
+    if info is None:
+        raise ValueError("Impossible d'extraire les informations de la playlist")
 
-            return jsonify({
-                'success': True,
-                'title': info.get('title', 'Playlist'),
-                'uploader': info.get('uploader', 'Inconnu'),
-                'video_count': len(videos),
-                'videos': videos[:50],
-            })
+    videos = [{
+        'title': e.get('title', 'Sans titre'),
+        'duration': e.get('duration', 0),
+        'url': e.get('url', ''),
+    } for e in info.get('entries', []) if e]
 
-    except Exception as e:
-        log.error(f"Playlist error: {e}")
-        return jsonify({'error': f'Erreur: {str(e)}'}), 500
+    return {
+        'success': True,
+        'is_playlist': True,
+        'platform': 'youtube',
+        'title': info.get('title', 'Playlist'),
+        'uploader': info.get('uploader', 'Inconnu'),
+        'video_count': len(videos),
+        'videos': videos[:50],
+    }
 
 
 # ==================== COMMUN ====================
@@ -918,6 +977,14 @@ def get_video_info():
 
         if not url:
             return jsonify({'error': 'URL manquante'}), 400
+
+        # Le serveur est seul juge de ce qu'est une playlist : c'est lui qui
+        # possede la semantique des URL.
+        # Restreint a YouTube : _run_playlist_download ne sait telecharger que
+        # ca, et _playlist_info etiquetait 'youtube' n'importe quelle URL
+        # portant ?list=, qui se faisait ensuite rejeter en 400.
+        if detect_platform(url) == 'youtube' and is_playlist_url(url):
+            return jsonify(_playlist_info(url))
 
         platform = detect_platform(url)
 
@@ -935,44 +1002,12 @@ def get_video_info():
                 info = ydl.extract_info(url, download=False)
         except Exception as extract_err:
             if platform == 'instagram':
-                return jsonify({
-                    'success': True,
-                    'title': 'Post Instagram',
-                    'duration': 0,
-                    'thumbnail': '',
-                    'uploader': '',
-                    'platform': 'instagram',
-                    'resolution': '',
-                    'width': 0,
-                    'height': 0,
-                    'fps': 0,
-                    'available_qualities': [],
-                    'has_audio': False,
-                    'is_playlist': False,
-                    'video_count': 0,
-                    '_is_photo': True,
-                })
+                return jsonify(_instagram_photo_stub())
             raise extract_err
 
         if info is None:
             if platform == 'instagram':
-                return jsonify({
-                    'success': True,
-                    'title': 'Post Instagram',
-                    'duration': 0,
-                    'thumbnail': '',
-                    'uploader': '',
-                    'platform': 'instagram',
-                    'resolution': '',
-                    'width': 0,
-                    'height': 0,
-                    'fps': 0,
-                    'available_qualities': [],
-                    'has_audio': False,
-                    'is_playlist': False,
-                    'video_count': 0,
-                    '_is_photo': True,
-                })
+                return jsonify(_instagram_photo_stub())
             raise Exception("Impossible d'extraire les informations")
 
         # Récupérer la résolution disponible
@@ -1007,7 +1042,10 @@ def get_video_info():
             for f in formats
         ) if formats else True
 
-        is_playlist = info.get('_type') == 'playlist'
+        # Seul YouTube est supporte en playlist par _run_playlist_download :
+        # annoncer is_playlist pour un set SoundCloud affichait une carte dont
+        # le seul bouton se faisait rejeter en 400 par start_download.
+        is_playlist = info.get('_type') == 'playlist' and platform == 'youtube'
 
         return jsonify({
             'success': True,
@@ -1045,25 +1083,6 @@ def _resolve_category_folder(category):
     return folder_map.get(category)
 
 
-@app.route('/downloads/<category>/<filename>')
-def download_file(category, filename):
-    """Permet de télécharger un fichier depuis une catégorie"""
-    safe_filename = sanitize_filename(filename)
-    folder = _resolve_category_folder(category)
-    if not folder:
-        return jsonify({'error': 'Catégorie invalide'}), 400
-
-    file_path = (folder / safe_filename).resolve()
-    folder_path = folder.resolve()
-
-    if not str(file_path).startswith(str(folder_path)):
-        return jsonify({'error': 'Accès refusé'}), 403
-
-    if file_path.exists():
-        return send_file(file_path, as_attachment=True)
-    return jsonify({'error': 'Fichier non trouvé'}), 404
-
-
 @app.route('/delete/<category>/<filename>', methods=['DELETE'])
 def delete_file(category, filename):
     """Supprime un fichier telecharge"""
@@ -1085,57 +1104,15 @@ def delete_file(category, filename):
     return jsonify({'success': True, 'message': f'Fichier supprime: {safe_filename}'})
 
 
-@app.route('/get-stats')
-def get_stats():
-    """Retourne les statistiques des téléchargements"""
-    total_files = 0
-    total_size = 0
-    largest_file = {'name': 'Aucun', 'size': 0, 'category': ''}
-
-    folders = [
-        (VIDEOS_FOLDER, 'Videos', 'videos'),
-        (MUSIC_FOLDER, 'Music', 'music'),
-        (PHOTOS_FOLDER, 'Photos', 'photos'),
-    ]
-
-    categories_stats = {
-        'videos': {'files': 0, 'size': 0},
-        'music': {'files': 0, 'size': 0},
-        'photos': {'files': 0, 'size': 0},
-    }
-
-    for folder, display_name, stat_key in folders:
-        if not folder.exists():
-            continue
-        for file in folder.iterdir():
-            if file.is_file():
-                total_files += 1
-                file_size = file.stat().st_size
-                total_size += file_size
-                categories_stats[stat_key]['files'] += 1
-                categories_stats[stat_key]['size'] += file_size
-
-                if file_size > largest_file['size']:
-                    largest_file = {
-                        'name': file.name,
-                        'size': file_size,
-                        'category': display_name
-                    }
-
-    return jsonify({
-        'total_files': total_files,
-        'total_size': total_size,
-        'largest_file': largest_file,
-        'categories': categories_stats
-    })
-
-
 @app.route('/list-downloads')
 def list_downloads():
     """Liste tous les fichiers telecharges avec leurs categories"""
     files = []
     image_exts = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
     audio_exts = ('.mp3', '.m4a', '.wav', '.flac', '.ogg')
+    # Les fichiers intermediaires ne sont pas des medias : ils apparaissaient
+    # comme des lignes ouvrables et le player echouait dessus.
+    partial_exts = ('.part', '.ytdl', '.temp', '.tmp')
 
     folders = [
         (VIDEOS_FOLDER, 'Videos'),
@@ -1157,6 +1134,8 @@ def list_downloads():
         if not folder.exists():
             continue
         for file in folder.iterdir():
+            if file.suffix.lower() in partial_exts:
+                continue
             if file.is_file() and file.name not in seen_names:
                 seen_names.add(file.name)
                 stat = file.stat()
@@ -1172,7 +1151,6 @@ def list_downloads():
                     'size': stat.st_size,
                     'category': category,
                     'media_type': media_type,
-                    'url': f'/downloads/{category}/{file.name}',
                     'timestamp': stat.st_mtime,
                 })
 
@@ -1297,6 +1275,32 @@ def cut_progress_stream(cut_id):
 
 TEMP_FOLDER = BASE_DIR / "temp_uploads"
 TEMP_FOLDER.mkdir(exist_ok=True)
+
+
+def _sweep_stale_partials():
+    """Retire les fichiers partiels orphelins des dossiers de sortie.
+
+    Depuis le passage au dossier par job, yt-dlp n'en ecrit plus ici — mais
+    ceux laisses par les anciennes versions sont desormais filtres de la
+    liste, donc invisibles : sans ce balayage ils resteraient pour toujours.
+    Appele au demarrage, quand aucun telechargement n'est en cours.
+    """
+    for folder in (VIDEOS_FOLDER, MUSIC_FOLDER, PHOTOS_FOLDER):
+        for pattern in ('*.part', '*.ytdl', '*.temp', '*.tmp'):
+            for f in folder.glob(pattern):
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+
+
+def _sweep_work_folder():
+    """Purge les dossiers de travail abandonnes par un worker tue.
+
+    Le seuil depasse le timeout maximum d'un telechargement, donc ce balayage
+    ne peut jamais atteindre un job encore vivant.
+    """
+    _sweep_old_files(WORK_FOLDER, DOWNLOAD_TIMEOUT + SSE_GRACE)
 
 
 def _sweep_temp_uploads():
@@ -1458,7 +1462,7 @@ def open_file(category, filename):
         return jsonify({'error': 'Fichier non trouve'}), 404
     try:
         if platform.system() == 'Windows':
-            subprocess.Popen(['explorer', '/select,', str(file_path)], **_SUBPROCESS_FLAGS)
+            subprocess.Popen([EXPLORER, '/select,', str(file_path)], **_SUBPROCESS_FLAGS)
         elif platform.system() == 'Darwin':
             subprocess.Popen(['open', '-R', str(file_path)])
         else:
@@ -1505,6 +1509,8 @@ def _migrate_legacy_folders():
 
 if __name__ == '__main__':
     _migrate_legacy_folders()
+    _sweep_work_folder()
+    _sweep_stale_partials()
 
     flask_thread = threading.Thread(
         target=lambda: app.run(debug=False, host='127.0.0.1', port=PORT, threaded=True),

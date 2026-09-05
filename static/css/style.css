@@ -123,8 +123,7 @@ body {
 
 /* La fiche d'un lien et l'editeur de decoupe prennent la place de la
    bibliotheque : un seul endroit ou l'action se passe. */
-.workspace:has(> #result-zone:not(.hidden)) > #library,
-.workspace:has(> #cut-editor:not(.hidden)) > #library { display: none; }
+.workspace:has(> #result-zone:not(.hidden), > #cut-editor:not(.hidden)) > #library { display: none; }
 
 /* ==================== RAIL ==================== */
 
@@ -189,19 +188,35 @@ body {
     pointer-events: none;
 }
 
-.go-btn {
-    background: var(--accent);
-    color: var(--accent-ink);
+/* Trois boutons primaires et deux discrets qui etaient cinq blocs distincts.
+   La forme est commune, seules la couleur et la marge interne varient. */
+.go-btn, .trim-cut-btn, .cut-reset-btn, .confirm-btn {
     border: none;
     border-radius: var(--r-md);
-    padding: 11px;
     font: inherit;
-    font-weight: 700;
     cursor: pointer;
     transition: background 0.15s;
 }
-.go-btn:hover { background: var(--accent-hi); }
-.go-btn:disabled { opacity: 0.5; cursor: default; }
+/* Tailles conservees telles quelles : la fusion des cinq blocs avait fait
+   passer .go-btn de 14 a 13 px et .confirm-btn.ok de 600 a 700, par effet de
+   bord d'une deduplication. */
+.trim-cut-btn, .cut-reset-btn, .confirm-btn { font-size: 13px; }
+.go-btn, .trim-cut-btn { font-weight: 700; }
+.confirm-btn.ok { font-weight: 600; }
+.go-btn, .trim-cut-btn { background: var(--accent); color: var(--accent-ink); }
+.go-btn:hover, .trim-cut-btn:hover { background: var(--accent-hi); }
+.cut-reset-btn, .confirm-btn.cancel { background: var(--panel); color: var(--text); }
+.cut-reset-btn:hover, .confirm-btn.cancel:hover { background: var(--line); }
+.confirm-btn.ok { background: var(--danger); color: var(--strong); }
+.confirm-btn.ok:hover { background: var(--danger-hi); }
+.go-btn:disabled, .trim-cut-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* Pas de width:100% : inutile dans le rail (colonne flex, deja etire) et
+   nuisible dans .result-formats, ou un element flex a 100% passe seul sur sa
+   ligne et annule l'alignement a droite. */
+.go-btn { padding: 11px; }
+.trim-cut-btn, .cut-reset-btn { padding: 9px 18px; }
+.confirm-btn { padding: 8px 18px; }
 
 .supported-platforms {
     display: flex;
@@ -532,20 +547,6 @@ body {
     text-overflow: ellipsis;
 }
 .cut-btns { display: flex; gap: 9px; margin-left: auto; }
-.cut-reset-btn, .trim-cut-btn {
-    border: none;
-    border-radius: var(--r-md);
-    padding: 9px 18px;
-    font: inherit;
-    font-size: 13px;
-    cursor: pointer;
-    transition: background 0.15s;
-}
-.cut-reset-btn { background: var(--panel); color: var(--text); }
-.cut-reset-btn:hover { background: var(--line); }
-.trim-cut-btn { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
-.trim-cut-btn:hover { background: var(--accent-hi); }
-.trim-cut-btn:disabled { opacity: 0.5; cursor: default; }
 
 
 /* ==================== PLAYER ==================== */
@@ -660,19 +661,6 @@ body {
 .confirm-msg { font-size: 13.5px; margin-bottom: 18px; word-break: break-word; }
 .confirm-msg strong { color: var(--strong); }
 .confirm-btns { display: flex; gap: 9px; justify-content: flex-end; }
-.confirm-btn {
-    padding: 8px 18px;
-    border-radius: var(--r-md);
-    border: none;
-    font: inherit;
-    font-size: 13px;
-    cursor: pointer;
-    transition: background 0.15s;
-}
-.confirm-btn.cancel { background: var(--panel); color: var(--text); }
-.confirm-btn.cancel:hover { background: var(--line); }
-.confirm-btn.ok { background: var(--danger); color: var(--strong); font-weight: 600; }
-.confirm-btn.ok:hover { background: var(--danger-hi); }
 
 /* ==================== DIVERS ==================== */
 

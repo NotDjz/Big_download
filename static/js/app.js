@@ -16,14 +16,12 @@ document.addEventListener('DOMContentLoaded', () => {
     goBtn.addEventListener('click', onGo);
 
     loadDownloadsList();
-    loadStats();
     setInterval(() => {
         // La fiche et l'editeur masquent la bibliotheque (regle :has()) : sans
         // cette garde, deux requetes et deux parcours de dossiers cote serveur
         // tournaient pour ne produire aucun pixel.
         if (!document.getElementById('library').offsetParent) return;
         loadDownloadsList();
-        loadStats();
     }, 15000);
 
     document.getElementById('open-folder-btn').addEventListener('click', () => {
@@ -126,11 +124,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return null;
     }
 
-    function isPlaylistUrl(url) {
-        return url.includes('playlist?list=') ||
-            (url.includes('youtube.com') && url.includes('list=') && !url.includes('watch?v='));
-    }
-
     function onUrlChange() {
         const url = urlInput.value.trim();
         const platform = detectPlatform(url);
@@ -152,17 +145,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const url = urlInput.value.trim();
         if (!url) return;
 
-        const platform = detectPlatform(url);
-        if (!platform) {
-            showStatus('Plateforme non reconnue', 'error');
-            return;
-        }
-
-        if (platform === 'youtube' && isPlaylistUrl(url)) {
-            fetchPlaylistInfo(url);
-        } else {
-            fetchInfo(url);
-        }
+        // Plus de filtrage ici : c'est le serveur qui possede la semantique des
+        // URL, et sa liste differait de celle-ci (vimeo n'etait connu que d'un
+        // cote). detectPlatform ne sert plus qu'au badge pendant la frappe.
+        fetchInfo(url);
     }
 
     async function fetchInfo(url) {
@@ -186,39 +172,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
             currentInfo = data;
             currentInfo._url = url;
-            showResult(data);
-            hideStatus();
-        } catch (err) {
-            showStatus('Erreur: ' + err.message, 'error');
-        } finally {
-            goBtn.disabled = false;
-            goBtn.textContent = 'Telecharger';
-        }
-    }
-
-    async function fetchPlaylistInfo(url) {
-        goBtn.disabled = true;
-        goBtn.textContent = '...';
-        showStatus('Recuperation de la playlist...', 'loading');
-        hideResult();
-
-        try {
-            const resp = await fetch('/get-playlist-info', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url }),
-            });
-            const data = await resp.json();
-
-            if (data.error) {
-                showStatus(data.error, 'error');
-                return;
-            }
-
-            currentInfo = data;
-            currentInfo._url = url;
-            currentInfo._isPlaylist = true;
-            showPlaylistResult(data);
+            // C'est le serveur qui dit si c'est une playlist. Le client
+            // choisissait l'endpoint sur sa propre detection, qui pouvait
+            // contredire la sienne.
+            if (data.is_playlist) showPlaylistResult(data);
+            else showResult(data);
             hideStatus();
         } catch (err) {
             showStatus('Erreur: ' + err.message, 'error');
@@ -278,9 +236,9 @@ document.addEventListener('DOMContentLoaded', () => {
             detail.className = 'format-detail';
             detail.textContent = 'Image';
             btn.appendChild(detail);
-            btn.addEventListener('click', () => selectFormat(btn, 'social', null));
+            btn.addEventListener('click', () => selectFormat(btn, 'photo', null));
             formatsEl.appendChild(btn);
-            selectFormat(btn, 'social', null);
+            selectFormat(btn, 'photo', null);
         } else if (hasVideo) {
             if (qualities.length > 0) {
                 const labels = { 2160: '4K', 1440: '1440p', 1080: '1080p', 720: '720p', 480: '480p', 360: '360p' };
@@ -379,9 +337,11 @@ document.addEventListener('DOMContentLoaded', () => {
         formatsEl.querySelectorAll('.format-btn').forEach(b => b.classList.remove('selected'));
         btn.classList.add('selected');
 
-        const platform = detectPlatform(currentInfo._url);
-        if (type === 'mp3') {
-            selectedFormat = { type: 'mp3', quality: null };
+        // currentInfo.platform vient du serveur ; le re-deduire ici faisait
+        // diverger les deux detections (vimeo etait reconnu d'un cote seulement).
+        const platform = currentInfo.platform;
+        if (type === 'mp3' || type === 'photo') {
+            selectedFormat = { type: type, quality: null };
         } else if (platform === 'youtube') {
             selectedFormat = { type: 'youtube', quality: quality };
         } else {
@@ -394,7 +354,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function startDownload() {
         if (!currentInfo || !selectedFormat) return;
         const url = currentInfo._url;
-        const type = currentInfo._isPlaylist ? 'playlist' : selectedFormat.type;
+        const type = selectedFormat.type;
         const quality = selectedFormat.quality;
         downloadWithProgress(url, type, quality);
     }
@@ -451,7 +411,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     showStatus(message, 'success');
                     loadDownloadsList();
-                    loadStats();
                 } else if (msg.status === 'error') {
                     es.close();
                     hideProgress();
@@ -535,6 +494,9 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const resp = await fetch('/list-downloads');
             const files = await resp.json();
+            // Avant le retour anticipe sur liste vide : sinon supprimer le
+            // dernier fichier laissait le pied de page sur ses anciens chiffres.
+            showStats(files);
 
             countEl.textContent = files.length > 0 ? files.length : '';
 
@@ -632,11 +594,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await resp.json();
             if (data.success) {
                 rowEl.remove();
-                loadStats();
-                const count = document.getElementById('downloads-count');
-                const remaining = document.querySelectorAll('.download-row').length;
-                count.textContent = remaining;
-                if (remaining === 0) loadDownloadsList();
+                // Un seul rechargement : il rafraichit la liste, le compteur et
+                // le pied de page. Avant, c'etait un retrait optimiste plus un
+                // appel a /get-stats, soit deux parcours de dossiers.
+                loadDownloadsList();
             } else {
                 rowEl.style.opacity = '1';
                 showStatus(data.error || 'Erreur suppression', 'error');
@@ -647,23 +608,33 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function loadStats() {
-        try {
-            const resp = await fetch('/get-stats');
-            const stats = await resp.json();
-            const footerStats = document.getElementById('footer-stats');
-            footerStats.textContent = stats.total_files + ' fichiers · ' + formatSize(stats.total_size);
-        } catch (err) {
-            // silent
-        }
+    // Derive de la liste deja chargee. /get-stats refaisait un parcours complet
+    // des trois dossiers cote serveur pour deux nombres que 'files' contient.
+    function showStats(files) {
+        const total = files.reduce((n, f) => n + (f.size || 0), 0);
+        document.getElementById('footer-stats').textContent =
+            files.length + ' fichiers · ' + formatSize(total);
     }
 
     // Player modal + custom controls
     let seekAnimFrame = null;
 
+    // Elements du player, resolus une fois. updatePlayerUI tourne a 60 fps et
+    // refaisait six recherches par image (deux querySelector dans getMedia,
+    // quatre getElementById) pour des noeuds qui ne bougent pas de la session.
+    const PL = {};
+    ['player-container', 'player-seek-fill', 'player-time', 'player-play-btn',
+     'player-vol-icon', 'player-volume', 'player-modal'].forEach(id => {
+        PL[id.replace('player-', '')] = document.getElementById(id);
+    });
+
+    let _media = null;
     function getMedia() {
-        const c = document.getElementById('player-container');
-        return c.querySelector('video') || c.querySelector('audio');
+        // Reste sur le cache tant que l'element est encore dans le conteneur ;
+        // closePlayer le vide, ce qui invalide naturellement.
+        if (_media && _media.parentNode === PL.container) return _media;
+        _media = PL.container.querySelector('video, audio');
+        return _media;
     }
 
     function fmtTime(s) {
@@ -684,9 +655,9 @@ document.addEventListener('DOMContentLoaded', () => {
             seekAnimFrame = null;
         }
 
-        const fill = document.getElementById('player-seek-fill');
-        const timeEl = document.getElementById('player-time');
-        const playBtn = document.getElementById('player-play-btn');
+        const fill = PL['seek-fill'];
+        const timeEl = PL.time;
+        const playBtn = PL['play-btn'];
 
         const pct = media.duration ? (media.currentTime / media.duration) * 100 : 0;
         fill.style.width = pct + '%';
@@ -727,7 +698,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function setupVolume() {
-        const volSlider = document.getElementById('player-volume');
+        const volSlider = PL.volume;
         volSlider.addEventListener('input', () => {
             const media = getMedia();
             if (media) {
@@ -740,7 +711,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updateVolIcon() {
         const media = getMedia();
-        const icon = document.getElementById('player-vol-icon');
+        const icon = PL['vol-icon'];
         if (!media) return;
         // Meme jeu d'icones que les lignes. Les emojis 128264/5/6 restaient les
         // seuls glyphes en couleur de l'interface, a cote de traces monochromes.
@@ -759,7 +730,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const media = getMedia();
         if (!media) return;
         media.muted = !media.muted;
-        const volSlider = document.getElementById('player-volume');
+        const volSlider = PL.volume;
         if (media.muted) {
             volSlider.value = 0;
         } else {
@@ -772,8 +743,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setupVolume();
 
     function openPlayer(file) {
-        const modal = document.getElementById('player-modal');
-        const container = document.getElementById('player-container');
+        const modal = PL.modal;
+        const container = PL.container;
         const titleEl = document.getElementById('modal-title');
         const metaEl = document.getElementById('modal-meta');
         const controls = document.getElementById('player-controls');
@@ -797,7 +768,7 @@ document.addEventListener('DOMContentLoaded', () => {
             container.appendChild(el);
             controls.style.display = '';
 
-            const volSlider = document.getElementById('player-volume');
+            const volSlider = PL.volume;
             el.volume = parseFloat(volSlider.value);
             // Poser l'icone a l'ouverture : elle n'etait dessinee qu'au premier
             // reglage du volume, l'entite HTML fournissant l'etat initial. En
@@ -826,14 +797,15 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     function closePlayer() {
-        const modal = document.getElementById('player-modal');
-        const container = document.getElementById('player-container');
+        const modal = PL.modal;
+        const container = PL.container;
 
         if (seekAnimFrame) cancelAnimationFrame(seekAnimFrame);
         const media = getMedia();
         if (media) media.pause();
 
         container.textContent = '';
+        _media = null;  // sinon la closure retient l'element detache et son tampon
         modal.classList.add('hidden');
         document.body.style.overflow = '';
     }
@@ -846,11 +818,12 @@ document.addEventListener('DOMContentLoaded', () => {
     setBtnIcon(closeBtn, 'close', false);
     closeBtn.addEventListener('click', closePlayer);
     document.getElementById('player-play-btn').addEventListener('click', togglePlay);
-    document.getElementById('player-vol-icon').addEventListener('click', toggleMute);
+    PL['vol-icon'].addEventListener('click', toggleMute);
 
     document.addEventListener('keydown', (e) => {
-        const modal = document.getElementById('player-modal');
-        if (modal.classList.contains('hidden')) return;
+        // PL.modal : ce handler est sur document, il tournait donc a chaque
+        // frappe dans le champ d'URL ou l'editeur de decoupe.
+        if (PL.modal.classList.contains('hidden')) return;
 
         if (e.key === 'Escape') {
             closePlayer();
@@ -867,14 +840,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const media = getMedia();
             if (media) {
                 media.volume = Math.min(1, media.volume + 0.1);
-                document.getElementById('player-volume').value = media.volume;
+                PL.volume.value = media.volume;
                 updateVolIcon();
             }
         } else if (e.key === 'ArrowDown') {
             const media = getMedia();
             if (media) {
                 media.volume = Math.max(0, media.volume - 0.1);
-                document.getElementById('player-volume').value = media.volume;
+                PL.volume.value = media.volume;
                 updateVolIcon();
             }
         }
@@ -899,7 +872,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 btn.disabled = false;
                 btn.textContent = 'Couper';
                 loadDownloadsList();
-                loadStats();
             } else if (ev.status === 'error') {
                 es.close();
                 progressBarEl.classList.add('hidden');
@@ -1071,8 +1043,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const handleStart = document.getElementById('cut-handle-start');
         const handleEnd = document.getElementById('cut-handle-end');
 
+        // Le rectangle est mesure au debut du glissement, pas a chaque
+        // deplacement : onMove ecrit quatre styles, donc relire la geometrie
+        // ensuite forcait une mise en page synchrone a chaque evenement de
+        // pointeur. La piste ne peut pas bouger pendant un glissement.
+        let dragRect = null;
+
         function pctFromEvent(e) {
-            const rect = track.getBoundingClientRect();
+            const rect = dragRect || track.getBoundingClientRect();
             const x = (e.touches ? e.touches[0].clientX : e.clientX);
             return Math.max(0, Math.min(1, (x - rect.left) / rect.width));
         }
@@ -1082,18 +1060,17 @@ document.addEventListener('DOMContentLoaded', () => {
         function onDown(handle, e) {
             e.preventDefault();
             dragging = handle;
+            dragRect = track.getBoundingClientRect();
             document.getElementById('cut-handle-' + handle).classList.add('dragging');
         }
 
-        const onStartMouse = (e) => onDown('start', e);
-        const onEndMouse = (e) => onDown('end', e);
-        const onStartTouch = (e) => onDown('start', e);
-        const onEndTouch = (e) => onDown('end', e);
+        const onStartDown = (e) => onDown('start', e);
+        const onEndDown = (e) => onDown('end', e);
 
-        handleStart.addEventListener('mousedown', onStartMouse);
-        handleEnd.addEventListener('mousedown', onEndMouse);
-        handleStart.addEventListener('touchstart', onStartTouch, { passive: false });
-        handleEnd.addEventListener('touchstart', onEndTouch, { passive: false });
+        handleStart.addEventListener('mousedown', onStartDown);
+        handleEnd.addEventListener('mousedown', onEndDown);
+        handleStart.addEventListener('touchstart', onStartDown, { passive: false });
+        handleEnd.addEventListener('touchstart', onEndDown, { passive: false });
 
         function onMove(e) {
             if (!dragging) return;
@@ -1110,6 +1087,7 @@ document.addEventListener('DOMContentLoaded', () => {
         function onUp() {
             if (!dragging) return;
             document.getElementById('cut-handle-' + dragging).classList.remove('dragging');
+            dragRect = null;
             if (cutState.media && dragging === 'start') {
                 cutState.media.currentTime = cutState.startPct * cutState.duration;
             }
@@ -1132,10 +1110,10 @@ document.addEventListener('DOMContentLoaded', () => {
         track.addEventListener('click', onTrackClick);
 
         _cutRangeCleanup = () => {
-            handleStart.removeEventListener('mousedown', onStartMouse);
-            handleEnd.removeEventListener('mousedown', onEndMouse);
-            handleStart.removeEventListener('touchstart', onStartTouch);
-            handleEnd.removeEventListener('touchstart', onEndTouch);
+            handleStart.removeEventListener('mousedown', onStartDown);
+            handleEnd.removeEventListener('mousedown', onEndDown);
+            handleStart.removeEventListener('touchstart', onStartDown);
+            handleEnd.removeEventListener('touchstart', onEndDown);
             document.removeEventListener('mousemove', onMove);
             document.removeEventListener('mouseup', onUp);
             document.removeEventListener('touchmove', onMove);
