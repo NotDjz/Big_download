@@ -17,6 +17,11 @@ echo.
 REM Installer PyInstaller
 py -m pip install pyinstaller
 
+REM yt-dlp est fige dans l'exe et ne pourra plus se mettre a jour : un
+REM binaire construit sur une version ancienne se fait bloquer en 403 des
+REM que la plateforme durcit ses protections.
+py -m pip install --upgrade yt-dlp
+
 REM Compiler
 py -m PyInstaller --noconfirm --onefile --windowed --name BigDownloader ^
     --icon "icon.ico" ^

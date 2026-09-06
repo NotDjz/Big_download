@@ -38,7 +38,12 @@ app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2 GB
 
 # Windows ne connait pas .woff2 : sans ca les polices partaient en
 # application/octet-stream.
-mimetypes.add_type('font/woff2', '.woff2')
+# Windows lit les types MIME dans le registre, ou .js peut valoir text/plain.
+# Avec X-Content-Type-Options: nosniff le navigateur refuserait alors le
+# script, et l'interface serait inerte. On epingle ce dont on depend.
+for _ext, _mime in (('.woff2', 'font/woff2'), ('.js', 'text/javascript'),
+                    ('.css', 'text/css'), ('.png', 'image/png')):
+    mimetypes.add_type(_mime, _ext)
 
 # Chemin absolu plutot que le nom nu : CreateProcess cherche d'abord dans le
 # dossier de l'image, qui est aussi celui ou l'exe portable ecrit downloads/,
@@ -131,12 +136,15 @@ DOWNLOAD_FOLDER = BASE_DIR / "downloads"
 if getattr(sys, 'frozen', False) and platform.system() == 'Windows':
     FFMPEG_PATH = str(BUNDLE_DIR / "ffmpeg.exe")
     FFPROBE_PATH = str(BUNDLE_DIR / "ffprobe.exe")
+    FFMPEG_DIR = BUNDLE_DIR
 elif (BASE_DIR / "ffmpeg.exe").exists():
     FFMPEG_PATH = str(BASE_DIR / "ffmpeg.exe")
     FFPROBE_PATH = str(BASE_DIR / "ffprobe.exe")
+    FFMPEG_DIR = BASE_DIR
 else:
     FFMPEG_PATH = "ffmpeg"
     FFPROBE_PATH = "ffprobe"
+    FFMPEG_DIR = None  # FFmpeg vient du PATH systeme
 DOWNLOAD_FOLDER.mkdir(exist_ok=True)
 
 # Rate limiting
@@ -220,7 +228,9 @@ def is_playlist_url(url):
         # youtu.be/<id> porte l'identifiant dans le chemin
         if parsed.netloc.endswith('youtu.be') and parsed.path.strip('/'):
             return False
-        if 'playlist' in parsed.path:
+        # Egalite et non sous-chaine : '/@chaine/playlists' est la page des
+        # playlists d'une chaine, pas une playlist telechargeable.
+        if parsed.path.rstrip('/') == '/playlist':
             return True
         return 'list' in params
     except Exception:
@@ -389,8 +399,11 @@ def _build_ydl_opts(download_type, url, quality, progress_hook, entry, job_tmp):
         'retries': 10,
     }
 
-    if getattr(sys, 'frozen', False):
-        ydl_opts['ffmpeg_location'] = str(BUNDLE_DIR)
+    # Pose des que la cascade sait ou est FFmpeg, pas seulement en frozen : en
+    # dev avec ffmpeg.exe a cote du projet, yt-dlp ne le trouvait pas et
+    # refusait toute fusion video+audio, donc toute la 4K.
+    if FFMPEG_DIR:
+        ydl_opts['ffmpeg_location'] = str(FFMPEG_DIR)
 
     cookies_file = _get_cookies_file()
     if cookies_file:
@@ -538,7 +551,16 @@ def _download_instagram_images(q, url):
             temp_filename = f'instagram_{shortcode}{suffix}.tmp'
             temp_filepath = PHOTOS_FOLDER / sanitize_filename(temp_filename)
             temp_filepath.write_bytes(img_resp.content)
-            _convert_to_jpg(temp_filepath)
+            converted = _convert_to_jpg(temp_filepath)
+            # On juge sur le fichier, pas sur le chemin rendu : _convert_to_jpg
+            # rend aussi le chemin d origine quand la sauvegarde a reussi mais
+            # que la suppression du .tmp a echoue (antivirus, indexeur). Le
+            # .tmp etant filtre de la liste, compter un echec reel annoncait un
+            # succes invisible, et compter un succes reel comme un echec
+            # annoncait une erreur alors que le JPG est bien la.
+            if not converted.with_suffix('.jpg').exists():
+                temp_filepath.unlink(missing_ok=True)
+                continue
             downloaded += 1
             _put_progress(q, {
                 'status': 'downloading',
@@ -632,6 +654,23 @@ def _check_filesize(file_path):
             raise Exception(f'Fichier trop volumineux ({size_gb:.1f} GB). Maximum: {max_gb:.0f} GB')
 
 
+def _explain_error(msg):
+    """Ajoute la cause probable a un 403, qui ne la donne jamais.
+
+    L'exe embarque une version figee de yt-dlp et ne peut pas la mettre a
+    jour : quand une plateforme durcit ses protections, tout echoue en 403
+    sans que rien n'indique qu'il faut une version plus recente.
+    """
+    if 'HTTP Error 403' not in msg:
+        return msg
+    # Le conseil differe selon le public : l'exe embarque yt-dlp et ne peut pas
+    # le mettre a jour, le mode dev le peut. Court, parce que le bandeau fait
+    # 268 px de large et disparait au bout de six secondes.
+    if getattr(sys, 'frozen', False):
+        return msg + ' - yt-dlp est peut-etre trop ancien : installe la derniere version de BIG DL.'
+    return msg + ' - yt-dlp est peut-etre trop ancien : pip install --upgrade yt-dlp.'
+
+
 def _run_download(download_id, url, download_type, quality=None):
     """Execute le telechargement dans un thread avec progress hooks"""
     entry = download_progress.get(download_id)
@@ -707,7 +746,7 @@ def _run_download(download_id, url, download_type, quality=None):
         log.warning(f"Download timeout {url}")
         _put_final(q, {'status': 'error', 'message': str(e)})
     except Exception as e:
-        error_msg = str(e)
+        error_msg = _explain_error(str(e))
         log.error(f"Download failed [{download_type}] {url}: {error_msg}")
         # Plus de repli automatique sur les images. Pour un post video,
         # l'API Instagram renvoie quand meme la vignette : le repli
@@ -781,7 +820,7 @@ def _run_playlist_download(q, url, quality, entry, job_tmp):
                 'status': 'playlist_video_error',
                 'current_video': i,
                 'total_videos': total,
-                'message': str(e),
+                'message': _explain_error(str(e)),
             })
 
     _put_final(q, {
@@ -1031,6 +1070,13 @@ def get_video_info():
 
         # Extraire les qualites disponibles
         formats = info.get('formats', [])
+        # Un post photo Instagram n'echoue pas toujours a l'extraction : quand
+        # elle passe, il ne restait aucun bouton Photo puisque _is_photo n'est
+        # pose que sur la branche exception.
+        has_video_stream = any(
+            f.get('vcodec', 'none') != 'none' for f in formats)
+        is_photo = platform == 'instagram' and not has_video_stream
+
         available_qualities = sorted(
             {f['height'] for f in formats
              if f.get('height') and f.get('vcodec', 'none') != 'none'},
@@ -1061,6 +1107,7 @@ def get_video_info():
             'available_qualities': available_qualities,
             'has_audio': has_audio,
             'is_playlist': is_playlist,
+            '_is_photo': is_photo,
             'video_count': len(info.get('entries', [])) if is_playlist else 0,
         })
 
@@ -1179,7 +1226,15 @@ def stream_file(category, filename):
 
 def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=None):
     """Execute FFmpeg dans un thread avec progression via stderr."""
-    q = cut_progress[cut_id]['queue']
+    entry = cut_progress.get(cut_id)
+    if not entry:
+        # Le client s'est deconnecte avant le demarrage : le finally du flux SSE
+        # a deja retire l'entree. Sans cette garde le KeyError sautait le
+        # nettoyage et laissait le fichier temporaire, jusqu a 2 Go.
+        if temp_cleanup:
+            temp_cleanup.unlink(missing_ok=True)
+        return
+    q = entry['queue']
 
     def fail(message):
         """Sortie en echec : un seul endroit ou nettoyer."""

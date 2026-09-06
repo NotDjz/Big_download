@@ -129,7 +129,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const platform = detectPlatform(url);
 
         if (platform) {
-            platformBadge.textContent = platform === 'x' ? 'X' : platform;
+            // Le CSS met en capitales : le ternaire n'existait que pour le 'x'.
+            platformBadge.textContent = platform;
             platformBadge.className = 'platform-badge';
             platformBadge.classList.remove('hidden');
         } else {

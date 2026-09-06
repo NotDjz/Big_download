@@ -68,8 +68,11 @@ async function main() {
   // lisible ; l'ordre du JSON et celui du DOM coincident.
   const pickable = await js(
     "fetch('/list-downloads').then(r=>r.json()).then(f=>f.findIndex(x=>x.media_type!=='photo'))");
+  // Number.isInteger et non 'idx < 0' : quand l'evaluation dans la page
+  // leve, pickable.val vaut undefined, et 'undefined < 0' est faux — la garde
+  // etait donc contournee et on cliquait sur [undefined].
   const idx = pickable.val;
-  if (idx < 0) {
+  if (!Number.isInteger(idx) || idx < 0) {
     console.log('  [SAUTE] downloads/ ne contient que des photos : le player a besoin d un media');
     ws.close();
     return null;
