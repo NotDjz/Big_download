@@ -14,6 +14,7 @@ Telecharge des videos, audios et photos depuis YouTube, Instagram, TikTok, X/Twi
 - **X / Twitter** — videos
 - **SoundCloud** — audio MP3
 - **Decoupe** — onglet dedie pour couper un fichier audio/video avec un slider visuel, precision a la frame
+- **Arret** — un bouton pour stopper un telechargement ou une decoupe en cours, et repartir tout de suite sur un autre
 - **Bibliotheque** — tout ce qui a ete telecharge, avec lecture integree, ouverture dans l'explorateur et suppression
 
 ## Installation

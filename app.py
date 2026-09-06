@@ -117,7 +117,7 @@ log = logging.getLogger('bigdl')
 
 # Suivi de progression des telechargements (download_id -> {queue, start_time})
 download_progress = {}
-# Suivi de progression des decoupes (cut_id -> {queue, thread})
+# Suivi de progression des decoupes (cut_id -> {queue, deadline, cancelled, proc})
 cut_progress = {}
 
 # Configuration
@@ -127,10 +127,37 @@ MAX_DOWNLOADS_PER_MINUTE = 10
 CUT_TIMEOUT = 10 * 60  # 10 minutes max par decoupe
 SSE_GRACE = 60  # marge laissee au worker pour s'annuler avant que le SSE lache
 TIMEOUT_MSG = f'Timeout: telechargement trop long ({DOWNLOAD_TIMEOUT // 60} min max)'
+# Meme raison que TIMEOUT_MSG : le message part vers le client, il ne doit
+# pas exister en deux litteraux qui divergeront au premier reformulage.
+CANCEL_MSG = 'Telechargement annule'
 
 
-class DownloadTimeout(Exception):
-    """Levee depuis le progress hook pour interrompre reellement yt-dlp."""
+# La liste des etats terminaux : _put_final les publie, _sse_response s'arrete
+# dessus. Elle etait ecrite deux fois, et 'cancelled' n'avait ete ajoute qu'a
+# un seul des deux endroits.
+TERMINAL_STATUSES = ('complete', 'error', 'cancelled')
+
+
+class DownloadAborted(Exception):
+    """Le job doit s'arreter. `status` et `message` sont ce que _put_final publie.
+
+    Une seule classe, et la raison portee en donnee plutot qu'en sous-type. Les
+    deux raisons actuelles -- echeance depassee, arret demande -- ne different
+    que par ces deux champs ; une hierarchie les distinguant imposait un except
+    par sous-type, plus un troisieme pose « au cas ou » qu'aucun raise ne
+    pouvait atteindre. Ici une future raison n'ajoute rien : elle passe un
+    status et un message.
+
+    Une seule classe est aussi ce que veulent les deux boucles qui la re-levent
+    (playlist, photos Instagram) : chacune est juste au-dessus d'un except
+    Exception qui avale et continue, et un tuple de sous-types incomplet les
+    ferait repartir en silence.
+    """
+
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+        self.message = message
 DOWNLOAD_FOLDER = BASE_DIR / "downloads"
 
 if getattr(sys, 'frozen', False) and platform.system() == 'Windows':
@@ -360,26 +387,32 @@ def _make_progress_hook(q, current_video=None, total_videos=None):
     return progress_hook
 
 
-def _make_deadline_hook(entry):
-    """Garde d'echeance, posee sur les deux familles de hooks.
+def _make_abort_hook(entry):
+    """Garde d'arret, posee sur les deux familles de hooks.
 
-    Lever depuis un hook est la seule facon d'annuler yt-dlp, qui tourne dans
-    le processus. Le controle vivait avant dans le generateur SSE, ou il
-    n'arretait que le rapport pendant que le thread continuait a telecharger.
-    Les hooks de progression sont muets pendant un merge ou une extraction
-    mp3, d'ou la pose sur les postprocessor_hooks aussi.
+    Lever depuis un hook est la seule facon d'interrompre yt-dlp, qui tourne
+    dans le processus : aucun signal exterieur ne peut l'arreter, et Python ne
+    sait pas tuer un thread. Le controle vivait avant dans le generateur SSE,
+    ou il n'arretait que le rapport pendant que le thread continuait a
+    telecharger. Les hooks de progression sont muets pendant un merge ou une
+    extraction mp3, d'ou la pose sur les postprocessor_hooks aussi.
 
-    L'echeance est relue dans l'entree du registre a chaque appel : la boucle
-    playlist la repousse video par video, et le filet SSE lit la meme valeur.
+    Deux raisons d'arreter, un seul mecanisme : l'echeance depassee et
+    l'annulation demandee. Les deux sont relues dans l'entree du registre a
+    chaque appel, donc la boucle playlist peut repousser l'echeance et la route
+    d'annulation lever le drapeau sans que le worker ait a etre notifie.
     """
-    def deadline_hook(d):
+    def abort_hook(d):
+        if entry.get('cancelled'):
+            raise DownloadAborted('cancelled', CANCEL_MSG)
         if time.time() > entry['deadline']:
-            raise DownloadTimeout(TIMEOUT_MSG)
-    return deadline_hook
+            raise DownloadAborted('error', TIMEOUT_MSG)
+    return abort_hook
 
 
 def _build_ydl_opts(download_type, url, quality, progress_hook, entry, job_tmp):
     """Construit les options yt-dlp"""
+    abort = _make_abort_hook(entry)
     ydl_opts = {
         'format': _get_format_string(download_type, quality),
         'outtmpl': _get_output_template(download_type, url),
@@ -390,8 +423,10 @@ def _build_ydl_opts(download_type, url, quality, progress_hook, entry, job_tmp):
         'quiet': True,
         'no_warnings': True,
         'no_color': True,
-        'progress_hooks': [_make_deadline_hook(entry), progress_hook],
-        'postprocessor_hooks': [_make_deadline_hook(entry)],
+        # Une seule garde, posee sur les deux familles : c'est le propos du
+        # docstring de _make_abort_hook, autant que le code le montre.
+        'progress_hooks': [abort, progress_hook],
+        'postprocessor_hooks': [abort],
         'http_headers': {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         },
@@ -458,7 +493,7 @@ def _shortcode_to_media_id(shortcode):
     return str(media_id)
 
 
-def _download_instagram_images(q, url):
+def _download_instagram_images(q, url, entry):
     """Telecharge les images d'un post Instagram via l'API avec cookies"""
     import http.cookiejar
 
@@ -544,6 +579,11 @@ def _download_instagram_images(q, url):
     total = len(image_urls)
 
     for i, img_url in enumerate(image_urls, 1):
+        # En tete de boucle et hors du try. En fin de corps, le `continue` du
+        # chemin « conversion ratee » la sautait entierement, et une image de
+        # plus, c'est jusqu'a 30 s d'attente avant que l'arret soit vu.
+        if entry.get('cancelled'):
+            raise DownloadAborted('cancelled', CANCEL_MSG)
         try:
             img_resp = session.get(img_url, timeout=30)
             img_resp.raise_for_status()
@@ -568,6 +608,13 @@ def _download_instagram_images(q, url):
                 'speed': '',
                 'eta': '',
             })
+        except DownloadAborted:
+            # Filet, et non le chemin nominal : la verification est en tete de
+            # boucle, hors du try. Il reste parce que le except Exception juste
+            # dessous avale tout, y compris un arret qu'un helper appele ici
+            # viendrait a lever -- c'est exactement comme ca que l'annulation
+            # etait devenue inerte, le job publiant « complete » quand meme.
+            raise
         except Exception:
             pass
 
@@ -582,6 +629,16 @@ def _download_instagram_images(q, url):
         })
     else:
         _put_final(q, {'status': 'error', 'message': 'Echec telechargement. Cookies expires ou acces refuse.'})
+
+
+def _kill_quietly(proc):
+    """Tue un process sans bruit : il a pu se terminer entre-temps."""
+    if not proc:
+        return
+    try:
+        proc.kill()
+    except OSError:
+        pass
 
 
 def _put_progress(q, event):
@@ -693,7 +750,7 @@ def _run_download(download_id, url, download_type, quality=None):
             # exception se declenchait aussi sur un cookie expire, un timeout
             # ou une coupure reseau pendant une *video* Instagram, et rendait
             # alors un message decrivant une operation jamais demandee.
-            _download_instagram_images(q, url)
+            _download_instagram_images(q, url, entry)
         elif download_type == 'playlist':
             _run_playlist_download(q, url, quality, entry, job_tmp)
         else:
@@ -742,9 +799,12 @@ def _run_download(download_id, url, download_type, quality=None):
 
                 _put_final(q, result)
 
-    except DownloadTimeout as e:
-        log.warning(f"Download timeout {url}")
-        _put_final(q, {'status': 'error', 'message': str(e)})
+    except DownloadAborted as e:
+        # Un seul except, parce que l'exception porte deja ce qu'il y a a
+        # publier. C'etaient trois branches, dont une qu'aucun raise du fichier
+        # ne pouvait atteindre.
+        log.warning(f"Download aborted [{e.status}] {url}: {e.message}")
+        _put_final(q, {'status': e.status, 'message': e.message})
     except Exception as e:
         error_msg = _explain_error(str(e))
         log.error(f"Download failed [{download_type}] {url}: {error_msg}")
@@ -813,8 +873,8 @@ def _run_playlist_download(q, url, quality, entry, job_tmp):
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.extract_info(video_url, download=True)
-        except DownloadTimeout:
-            raise  # sinon chaque video suivante expirerait a son tour
+        except DownloadAborted:
+            raise  # sinon la boucle continuerait video par video
         except Exception as e:
             _put_progress(q, {
                 'status': 'playlist_video_error',
@@ -880,6 +940,7 @@ def start_download():
             # Repoussee video par video par la boucle playlist ; lue par les
             # hooks (qui annulent) et par le filet SSE (qui libere le client).
             'deadline': now + DOWNLOAD_TIMEOUT,
+            'cancelled': False,
         }
 
         thread = threading.Thread(
@@ -920,7 +981,7 @@ def _sse_response(registry, key, unknown_msg, poll, deadline_key=None):
                 try:
                     event = q.get(timeout=poll)
                     yield f'data: {json.dumps(event)}\n\n'
-                    if event.get('status') in ('complete', 'error'):
+                    if event.get('status') in TERMINAL_STATUSES:
                         break
                 except queue.Empty:
                     yield f'data: {json.dumps({"status": "heartbeat"})}\n\n'
@@ -941,6 +1002,28 @@ def progress_stream(download_id):
     """Endpoint SSE pour le suivi de progression"""
     return _sse_response(download_progress, download_id,
                          'Telechargement inconnu', poll=10, deadline_key='deadline')
+
+
+@app.route('/cancel/<job_id>', methods=['POST'])
+def cancel_job(job_id):
+    """Arrete un telechargement ou une decoupe en cours.
+
+    Repond tout de suite, sans attendre que le worker accuse reception : le
+    client doit pouvoir relancer immediatement. Un telechargement s'arrete au
+    prochain hook yt-dlp — quasi instantanement en pratique, mais si yt-dlp est
+    bloque la ou aucun hook ne passe, le thread survit jusqu'a la fermeture de
+    l'application. Python ne sait pas tuer un thread ; c'est pour cela que
+    l'interface se libere sans lui.
+    """
+    entry = download_progress.get(job_id) or cut_progress.get(job_id)
+    if not entry:
+        # Deja termine, ou jamais existe : dans les deux cas il n'y a plus rien
+        # a arreter, et l'appelant veut juste reprendre la main.
+        return jsonify({'success': True})
+
+    entry['cancelled'] = True
+    _kill_quietly(entry.get('proc'))
+    return jsonify({'success': True})
 
 
 @app.route('/')
@@ -1236,15 +1319,22 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
         return
     q = entry['queue']
 
-    def fail(message):
-        """Sortie en echec : un seul endroit ou nettoyer."""
-        for path in (out_path, temp_cleanup):
+    def fail(message, status='error'):
+        """Sortie sans resultat : un seul endroit ou nettoyer.
+
+        Une annulation garde le fichier source. On arrete justement une decoupe
+        pour la refaire avec d'autres bornes : effacer la source renvoyait un
+        404 « Fichier source non trouve » au moment de relancer, et tuait la
+        preview au passage. Le balayage horaire de temp_uploads/ s'en charge.
+        """
+        doomed = (out_path,) if status == 'cancelled' else (out_path, temp_cleanup)
+        for path in doomed:
             if path:
                 try:
                     path.unlink(missing_ok=True)
                 except OSError:
                     pass
-        _put_final(q, {'status': 'error', 'message': message})
+        _put_final(q, {'status': status, 'message': message})
 
     try:
         cmd = [
@@ -1262,6 +1352,14 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             text=True, **_SUBPROCESS_FLAGS,
         )
+        # Publie pour que /cancel puisse le tuer. Contrairement a yt-dlp,
+        # FFmpeg est un sous-processus : l'arret est immediat et certain.
+        entry['proc'] = proc
+        # Relire le drapeau juste apres : une annulation tombee entre la
+        # creation du process et sa publication n'aurait vu aucun process a
+        # tuer, et FFmpeg aurait reencode tout le clip pour rien.
+        if entry.get('cancelled'):
+            _kill_quietly(proc)
 
         # Chien de garde sur un timer : l'echeance etait auparavant evaluee dans
         # la boucle de lecture, donc un FFmpeg bloque qui n'ecrit plus une seule
@@ -1270,10 +1368,7 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
 
         def _kill_stalled():
             timed_out.set()
-            try:
-                proc.kill()
-            except OSError:
-                pass
+            _kill_quietly(proc)
 
         watchdog = threading.Timer(CUT_TIMEOUT, _kill_stalled)
         watchdog.daemon = True
@@ -1295,6 +1390,10 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
             proc.wait()
         finally:
             watchdog.cancel()
+
+        if entry.get('cancelled'):
+            fail('Decoupe annulee', status='cancelled')
+            return
 
         if timed_out.is_set():
             fail('Timeout: decoupe trop longue')
@@ -1459,6 +1558,7 @@ def cut_uploaded():
     cut_progress[cut_id] = {
         'queue': queue.Queue(maxsize=200),
         'deadline': time.time() + CUT_TIMEOUT,
+        'cancelled': False,
     }
     thread = threading.Thread(
         target=_run_ffmpeg_cut,

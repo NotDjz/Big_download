@@ -6,7 +6,8 @@
 //
 // Couvre ce qu'un test cote serveur ne peut pas voir : les handlers du player
 // sont-ils cables, la CSP bloque-t-elle quelque chose, la boucle rAF avance-t-elle
-// en lecture et se fige-t-elle en pause.
+// en lecture et se fige-t-elle en pause, et une coupe en cours est-elle bien
+// arretee quand on change de fichier.
 
 const PORT = Number(process.env.CDP_PORT || 9223);
 const APP = process.env.APP_URL || 'http://localhost:5555';
@@ -157,6 +158,82 @@ async function main() {
 
   await js(`${MEDIA}.muted=false`);
   await js("document.getElementById('player-backdrop').click()");
+
+  // ---- Annulation : « Changer de fichier » pendant une decoupe.
+  //
+  // C'est le seul des deux flux pilotable ici. Un telechargement demande le
+  // reseau, et un SSE fabrique par CDP se termine avec son corps : EventSource
+  // traite cette fin comme une coupure et declenche onerror, donc resetJob() --
+  // l'etat qu'on veut observer serait detruit avant la premiere assertion.
+  //
+  // Ce que ce test attrape : endCut() a longtemps vecu dans followCutProgress,
+  // hors de portee de « Changer de fichier », qui n'est jamais desactive
+  // pendant une coupe. On changeait donc de fichier avec une coupe toujours en
+  // cours, « Arreter » restant visible et pointe sur l'ancien job.
+  await js("document.querySelector('.tab[data-tab=\"cut\"]').click()");
+  await sleep(300);
+
+  const uploaded = await js(`(async () => {
+    const files = await (await fetch('/list-downloads')).json();
+    // La plus grosse video : la coupe porte sur toute la duree, il faut qu'elle
+    // dure assez pour qu'on ait le temps de cliquer.
+    const v = files.filter((x) => x.media_type === 'video').sort((a, b) => b.size - a.size)[0];
+    if (!v) return null;
+    const blob = await (await fetch('/stream/' + v.category + '/' + encodeURIComponent(v.name))).blob();
+    const dt = new DataTransfer();
+    dt.items.add(new File([blob], v.name, { type: 'video/mp4' }));
+    const inp = document.getElementById('cut-file-input');
+    inp.files = dt.files;
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    return v.name + ' - ' + Math.round(v.size / 1048576) + ' Mo';
+  })()`);
+
+  if (!uploaded.val) {
+    console.log('  [SAUT ] aucune video dans la bibliotheque pour tester la decoupe');
+    return null;
+  }
+
+  const until = async (expr, ms) => {
+    const stop = Date.now() + ms;
+    while (Date.now() < stop) {
+      if ((await js(expr)).val) return true;
+      await sleep(250);
+    }
+    return false;
+  };
+
+  const pret = await until("!document.getElementById('cut-editor').classList.contains('hidden')", 60000);
+  check('editeur de decoupe pret apres upload', pret, uploaded.val);
+
+  if (pret) {
+    const avant = (await js('fetch("/list-downloads").then(r=>r.json()).then(f=>f.length)')).val;
+    await js("document.getElementById('cut-do-btn').click()");
+    // Attendre que la coupe soit reellement lancee : sinon on testerait le
+    // chemin « rien a annuler », qui passe tout seul.
+    const lancee = await until("!document.getElementById('cut-cancel-btn').classList.contains('hidden')", 20000);
+    check('la coupe demarre et « Arreter » apparait', lancee, `bouton visible = ${lancee}`);
+
+    // Le geste teste : changer de fichier alors que la coupe tourne.
+    await js("document.getElementById('cut-reset-btn').click()");
+    await sleep(1200);
+
+    const annule = c.events.some(
+      (e) => e.method === 'Network.requestWillBeSent'
+        && e.params.request.method === 'POST'
+        && e.params.request.url.includes('/cancel/'));
+    check('changer de fichier annule la coupe en cours', annule,
+      `POST /cancel observe = ${annule}`);
+
+    const btnCache = (await js("document.getElementById('cut-cancel-btn').classList.contains('hidden')")).val;
+    check('« Arreter » disparait avec la coupe', btnCache, `cache = ${btnCache}`);
+    const coupeDispo = (await js("!document.getElementById('cut-do-btn').disabled")).val;
+    check('« Couper » redevient utilisable', coupeDispo, `actif = ${coupeDispo}`);
+
+    await sleep(1500);
+    const apres = (await js('fetch("/list-downloads").then(r=>r.json()).then(f=>f.length)')).val;
+    check('aucun fichier laisse par la coupe annulee', apres === avant,
+      `${avant} avant, ${apres} apres`);
+  }
 
   const errs = c.events.filter((e) => e.method === 'Log.entryAdded' && e.params.entry.level === 'error')
     .map((e) => e.params.entry.text);

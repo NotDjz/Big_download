@@ -255,6 +255,23 @@ body {
 /* Un seul composant : .status-msg et .trim-status etaient deux copies, et
    .trim-status avait deja perdu son etat .loading — une decoupe en cours
    affichait donc un lisere neutre au lieu du cuivre. */
+/* Discret mais toujours atteignable : il ne doit pas concurrencer l'action
+   principale, et il doit rester trouvable quand un telechargement se bloque.
+   Sert aux deux onglets : le geste est le meme des deux cotes. */
+.cancel-btn {
+    align-self: flex-start;
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    padding: 5px 12px;
+    font: inherit;
+    font-size: 12px;
+    color: var(--dim);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+}
+.cancel-btn:hover { color: var(--danger); border-color: var(--danger); }
+
 .status-msg,
 .trim-status {
     font-size: 12.5px;

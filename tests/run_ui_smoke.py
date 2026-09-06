@@ -102,6 +102,20 @@ def main():
         except subprocess.TimeoutExpired:
             pass
         shutil.rmtree(profile, ignore_errors=True)
+        # Le test televerse une video pour la couper, et une coupe annulee garde
+        # volontairement sa source : sans ce nettoyage, chaque execution laisse
+        # plusieurs centaines de Mo dans temp_uploads/ jusqu'au balayage horaire.
+        # Sans risque pour un travail en cours : la fonction refuse de demarrer
+        # quand le port de l'application est deja pris.
+        for leftover in app.TEMP_FOLDER.glob('*'):
+            if leftover.is_file():
+                try:
+                    leftover.unlink()
+                except OSError:
+                    # missing_ok ne couvre pas un verrou Windows : FFmpeg peut
+                    # tenir encore le fichier quelques instants. Le balayage
+                    # horaire de l'application s'en chargera.
+                    pass
 
 
 if __name__ == "__main__":

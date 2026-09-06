@@ -4,6 +4,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const platformBadge = document.getElementById('platform-badge');
     const resultZone = document.getElementById('result-zone');
     const progressZone = document.getElementById('progress-zone');
+    const cancelBtn = document.getElementById('cancel-btn');
+    // Le job en cours : { id, es } ou null. Le bouton s'en sert, et
+    // hideProgress() le remet a zero pour qu'il ne pointe jamais dans le vide.
+    let currentJob = null;
     const statusMsg = document.getElementById('status-msg');
 
     let currentInfo = null;
@@ -80,6 +84,63 @@ document.addEventListener('DOMContentLoaded', () => {
         return btn;
     }
 
+    // Poster /cancel AVANT de fermer le flux SSE. Fermer d'abord declenche le
+    // finally du generateur cote serveur, qui retire l'entree du registre :
+    // /cancel ne trouvait alors plus rien a annuler, repondait succes, et le job
+    // continuait jusqu'au bout pendant que l'interface affichait « arrete ».
+    // La route ne fait que poser un drapeau, donc l'attente est de l'ordre de la
+    // milliseconde ; la course la borne si le serveur ne repond pas du tout.
+    async function postCancel(id) {
+        try {
+            await Promise.race([
+                fetch('/cancel/' + id, { method: 'POST' }),
+                new Promise((resolve) => setTimeout(resolve, 1500)),
+            ]);
+        } catch (err) {
+            // Le serveur n'a pas repondu : on rend la main quand meme.
+        }
+    }
+
+    // La decoupe a son propre bouton, dans l'onglet Decouper. Comme currentJob,
+    // elle retient de quoi se defaire entierement : « Changer de fichier »
+    // n'est jamais desactive pendant une coupe et doit pouvoir l'arreter.
+    let currentCut = null;   // { id, es, btn, bar } ou null
+
+    const cutCancelBtn = document.getElementById('cut-cancel-btn');
+
+    // Le pendant de resetJob() pour la decoupe, et pour la meme raison : un seul
+    // endroit qui rend l'onglet au repos, atteignable de partout. Quand il
+    // vivait dans followCutProgress, changer de fichier pendant une coupe
+    // laissait « Arreter » visible et pointe sur l'ancien job, dont l'evenement
+    // terminal reactivait ensuite « Couper » sous la nouvelle coupe.
+    function endCut(delay) {
+        const cut = currentCut;
+        if (!cut) return;
+        currentCut = null;
+        cut.es.close();
+        cutCancelBtn.classList.add('hidden');
+        cutCancelBtn.disabled = false;
+        cut.btn.disabled = false;
+        cut.btn.textContent = 'Couper';
+        if (delay) setTimeout(() => cut.bar.classList.add('hidden'), delay);
+        else cut.bar.classList.add('hidden');
+    }
+
+    async function cancelCurrentCut() {
+        // Capture avant l'await : l'evenement 'cancelled' peut arriver pendant.
+        const cut = currentCut;
+        if (!cut) return;
+        cutCancelBtn.disabled = true;
+        await postCancel(cut.id);
+        // FFmpeg est un sous-processus : il est tue pour de bon et l'evenement
+        // 'cancelled' arrive aussitot, qui remet l'onglet au repos. Mais si
+        // l'entree avait deja ete retiree du registre, cet evenement ne vient
+        // jamais — le bouton doit alors se reactiver de lui-meme.
+        cutCancelBtn.disabled = false;
+    }
+
+    cutCancelBtn.addEventListener('click', cancelCurrentCut);
+
     function metaSpans(el, parts) {
         el.textContent = '';
         parts.filter(Boolean).forEach((t, i) => {
@@ -138,7 +199,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         hideResult();
-        hideProgress();
+        // Pas de masquage tant qu'un job vit : « Arreter » est dans cette zone,
+        // et une seule frappe dans le champ URL rendait un telechargement en
+        // cours invisible, donc inarretable.
+        if (!currentJob) hideProgress();
         hideStatus();
     }
 
@@ -361,6 +425,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function downloadWithProgress(url, type, quality) {
+        // Defaire le precedent avant d'en ouvrir un autre. Sinon son
+        // EventSource restait ouvert, ses handlers appelaient resetJob() et
+        // fermaient le flux du nouveau ; et le telechargement abandonne
+        // continuait cote serveur sans que rien ne puisse plus l'arreter.
+        if (currentJob) {
+            postCancel(currentJob.id);
+            resetJob();
+        }
         hideResult();
         showProgress();
         updateProgress(0, 'Demarrage...', '', '');
@@ -383,6 +455,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const es = new EventSource('/progress/' + data.download_id);
+            currentJob = { id: data.download_id, es: es };
 
             es.onmessage = (event) => {
                 const msg = JSON.parse(event.data);
@@ -402,8 +475,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 } else if (msg.status === 'playlist_video_error') {
                     updateProgress(0, 'Erreur video ' + msg.current_video + '/' + msg.total_videos, '', '');
                 } else if (msg.status === 'complete') {
-                    es.close();
-                    hideProgress();
+                    resetJob();
                     let message = 'Telecharge: ' + msg.title;
                     if (msg.is_playlist) {
                         message = 'Playlist terminee: ' + msg.title + ' (' + msg.total_videos + ' videos)';
@@ -412,16 +484,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                     showStatus(message, 'success');
                     loadDownloadsList();
+                } else if (msg.status === 'cancelled') {
+                    resetJob();
+                    showStatus(msg.message || 'Telechargement annule', 'error');
+                    loadDownloadsList();
                 } else if (msg.status === 'error') {
-                    es.close();
-                    hideProgress();
+                    resetJob();
                     showStatus(msg.message || 'Erreur inconnue', 'error');
                 }
             };
 
             es.onerror = () => {
-                es.close();
-                hideProgress();
+                resetJob();
                 showStatus('Connexion perdue', 'error');
             };
 
@@ -431,8 +505,35 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Libere l'interface tout de suite, sans attendre que le worker accuse
+    // reception : un telechargement bloque la ou aucun hook yt-dlp ne passe ne
+    // repondra jamais, et l'utilisateur doit pouvoir relancer malgre tout.
+    async function cancelCurrentJob() {
+        const job = currentJob;
+        if (!job) return;
+        cancelBtn.disabled = true;
+        await postCancel(job.id);
+        cancelBtn.disabled = false;
+        // Le job a pu se terminer pendant l'aller-retour : resetJob() a alors
+        // deja tourne, et ecraser son message de succes par « arrete » mentirait.
+        if (currentJob !== job) return;
+        resetJob();
+        showStatus('Telechargement arrete', 'error');
+    }
+
+    cancelBtn.addEventListener('click', cancelCurrentJob);
+
     function showProgress() {
         progressZone.classList.remove('hidden');
+    }
+
+    // Un seul endroit qui defait un job : fermer le flux, oublier la reference,
+    // masquer la zone. C'etait eparpille sur quatre sites et trois appels a
+    // hideProgress() l'oubliaient.
+    function resetJob() {
+        if (currentJob && currentJob.es) currentJob.es.close();
+        currentJob = null;
+        hideProgress();
     }
 
     function hideProgress() {
@@ -570,18 +671,18 @@ document.addEventListener('DOMContentLoaded', () => {
             file.name.replace(/</g, '&lt;') + '</strong> ?</div>';
         const btns = document.createElement('div');
         btns.className = 'confirm-btns';
-        const cancelBtn = document.createElement('button');
-        cancelBtn.className = 'confirm-btn cancel';
-        cancelBtn.textContent = 'Annuler';
+        const dismissBtn = document.createElement('button');
+        dismissBtn.className = 'confirm-btn cancel';
+        dismissBtn.textContent = 'Annuler';
         const okBtn = document.createElement('button');
         okBtn.className = 'confirm-btn ok';
         okBtn.textContent = 'Supprimer';
-        btns.appendChild(cancelBtn);
+        btns.appendChild(dismissBtn);
         btns.appendChild(okBtn);
         box.appendChild(btns);
         overlay.appendChild(box);
         document.body.appendChild(overlay);
-        cancelBtn.addEventListener('click', () => overlay.remove());
+        dismissBtn.addEventListener('click', () => overlay.remove());
         overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
         okBtn.addEventListener('click', () => { overlay.remove(); deleteFile(file, rowEl); });
     }
@@ -857,38 +958,35 @@ document.addEventListener('DOMContentLoaded', () => {
     function followCutProgress(cutId, statusEl, progressBarEl, btn) {
         const fill = progressBarEl.querySelector('.cut-progress-fill');
         progressBarEl.classList.remove('hidden');
+        cutCancelBtn.classList.remove('hidden');
         fill.style.width = '0%';
+
         const es = new EventSource('/cut-progress/' + cutId);
+        // endCut ferme le flux : c'est lui, et lui seul, qui defait une coupe.
+        currentCut = { id: cutId, es: es, btn: btn, bar: progressBarEl };
         es.onmessage = (e) => {
             const ev = JSON.parse(e.data);
             if (ev.status === 'progress') {
                 fill.style.width = ev.percent + '%';
                 statusEl.textContent = 'Decoupe en cours... ' + ev.percent + '%';
             } else if (ev.status === 'complete') {
-                es.close();
                 fill.style.width = '100%';
                 statusEl.textContent = ev.message + ' (' + formatSize(ev.size) + ')';
                 statusEl.className = 'trim-status success';
-                setTimeout(() => progressBarEl.classList.add('hidden'), 1500);
-                btn.disabled = false;
-                btn.textContent = 'Couper';
+                endCut(1500);
                 loadDownloadsList();
-            } else if (ev.status === 'error') {
-                es.close();
-                progressBarEl.classList.add('hidden');
+            } else if (ev.status === 'cancelled' || ev.status === 'error') {
+                // 'cancelled' manquait : une coupe arretee laissait la barre a
+                // l'ecran et « Couper » desactive jusqu'au rechargement.
+                endCut();
                 statusEl.textContent = ev.message;
                 statusEl.className = 'trim-status error';
-                btn.disabled = false;
-                btn.textContent = 'Couper';
             }
         };
         es.onerror = () => {
-            es.close();
-            progressBarEl.classList.add('hidden');
+            endCut();
             statusEl.textContent = 'Connexion perdue';
             statusEl.className = 'trim-status error';
-            btn.disabled = false;
-            btn.textContent = 'Couper';
         };
     }
 
@@ -983,6 +1081,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function resetCutEditor() {
+        // « Changer de fichier » n'est jamais desactive pendant une coupe : il
+        // faut donc l'arreter pour de bon, pas seulement masquer l'editeur.
+        if (currentCut) {
+            postCancel(currentCut.id);
+            endCut();
+        }
         if (_cutRangeCleanup) _cutRangeCleanup();
         setCutView(false);
         if (cutState.media) cutState.media.pause();
