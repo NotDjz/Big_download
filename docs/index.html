@@ -214,6 +214,7 @@ footer a { color: var(--dim); }
     <h2>Decouper sans reencoder tout le fichier</h2>
     <p class="lede">L'onglet Decouper prend un fichier depuis ton disque, pas seulement ceux telecharges ici : MP4, MKV, WEBM, AVI, MOV, MP3, M4A, WAV, FLAC ou OGG, jusqu'a 2 Go. Deux poignees sur une piste, un apercu qui suit, et FFmpeg fait la coupe.</p>
     <p>La coupe est reencodee pour tomber juste a l'image pres plutot qu'au groupe d'images le plus proche, ce qui evite le blanc ou le saut au demarrage. Le fichier d'origine n'est jamais touche : la coupe part dans <code>downloads/</code> avec le reste, sous <code>nom_v2.mp4</code>, puis <code>_v3</code>, et ainsi de suite.</p>
+    <p>Une coupe en cours s'arrete avec le meme bouton <b>Arreter</b>, et le fichier charge reste en place : on arrete generalement une coupe pour la refaire avec d'autres bornes, pas pour changer de fichier.</p>
   </section>
 
   <section>
@@ -232,6 +233,7 @@ run.bat</pre>
     <p class="lede">La cause la plus frequente est une erreur 403.</p>
     <p>Les plateformes durcissent regulierement leurs protections, et yt-dlp — la bibliotheque qui fait le travail — suit avec quelques jours de retard. L'executable embarque une version figee : il ne peut pas se mettre a jour tout seul. Une version de BIG DL vieille de quelques mois finira donc par se faire refuser.</p>
     <p>Recupere la <a href="https://github.com/NotDjz/Big_download/releases/latest">derniere version</a>. Depuis le code source, <code>run.bat</code> met yt-dlp a jour a chaque lancement.</p>
+    <p>En attendant, un bouton <b>Arreter</b> apparait pendant le telechargement. Il libere l'interface tout de suite, sans attendre que le travail en cours reponde, et le fichier a moitie recupere est efface plutot que laisse dans la bibliotheque. Auparavant il fallait fermer la fenetre, ce qui coupait le travail en plein milieu et laissait ses fichiers intermediaires sur le disque jusqu'au demarrage suivant. La coupure elle-meme est presque toujours immediate ; dans le cas rare ou yt-dlp reste bloque a un endroit qui ne rend jamais la main, la tache s'arrete a la fermeture de l'application, mais tu peux relancer sans attendre.</p>
   </section>
 
   <footer>
