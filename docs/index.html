@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BIG DL — telechargeur de medias pour Windows</title>
+<meta name="description" content="Colle un lien YouTube, Instagram, TikTok, X ou SoundCloud. Recupere la video, l'audio ou la photo. Un seul exe, rien a installer.">
+<link rel="icon" type="image/png" href="icon.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap">
+<style>
+:root {
+  --bg:        #15191f;
+  --panel:     #1b2028;
+  --panel-2:   #1f242d;
+  --line:      #272d36;
+  --text:      #dde2e9;
+  --strong:    #ffffff;
+  --dim:       #8b94a2;
+  --dimmer:    #626b78;
+  --accent:    #e5893f;
+  --accent-hi: #f29b53;
+  --ink:       #1a1207;
+  --brand:     #8b6dff;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: Archivo, "Segoe UI", system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 980px; margin: 0 auto; padding: 0 24px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+/* ---------- en-tete ---------- */
+.top { padding: 34px 0 0; }
+.logo { font-size: 22px; font-weight: 800; letter-spacing: -0.04em; color: var(--strong); }
+.logo span { color: var(--brand); }
+
+/* ---------- hero ---------- */
+.hero { padding: 56px 0 44px; }
+h1 {
+  font-size: clamp(34px, 5.5vw, 54px);
+  font-weight: 800;
+  letter-spacing: -0.035em;
+  line-height: 1.05;
+  color: var(--strong);
+  max-width: 17ch;
+  text-wrap: balance;
+}
+.sub { margin-top: 20px; font-size: 19px; color: var(--dim); max-width: 58ch; }
+.get { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 20px; margin-top: 32px; }
+.btn {
+  display: inline-block;
+  background: var(--accent);
+  color: var(--ink);
+  font-weight: 700;
+  font-size: 16px;
+  padding: 14px 26px;
+  border-radius: 7px;
+  transition: background .15s;
+}
+.btn:hover { background: var(--accent-hi); text-decoration: none; }
+.get small { color: var(--dimmer); font-size: 14px; }
+
+.shot { margin: 8px 0 0; }
+.shot img {
+  width: 100%;
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.shot figcaption { margin-top: 10px; font-size: 13.5px; color: var(--dimmer); }
+
+/* ---------- sections ---------- */
+section { padding: 52px 0; border-top: 1px solid var(--line); }
+h2 {
+  font-size: 25px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--strong);
+  margin-bottom: 8px;
+}
+.lede { color: var(--dim); max-width: 62ch; margin-bottom: 26px; }
+p + p { margin-top: 14px; }
+
+/* sources */
+/* 165px : cinq colonnes tiennent a pleine largeur, donc aucune plateforme ne
+   se retrouve seule sur sa ligne. */
+.sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 2px; }
+.src { padding: 16px 18px; background: var(--panel); }
+.src b { display: block; color: var(--strong); font-weight: 600; font-size: 15.5px; }
+.src span { font-size: 14px; color: var(--dim); }
+
+/* arborescence : le vocabulaire du sujet, pas une decoration */
+.tree {
+  background: var(--panel);
+  border-left: 2px solid var(--accent);
+  padding: 20px 22px;
+  font-family: ui-monospace, Consolas, "SF Mono", monospace;
+  font-size: 14px;
+  line-height: 1.9;
+  color: var(--dim);
+  overflow-x: auto;
+}
+.tree b { color: var(--text); font-weight: 400; }
+.tree i { color: var(--dimmer); font-style: normal; }
+
+/* faits : ce que l'app fait vraiment a la machine */
+.facts { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.fact { display: grid; grid-template-columns: minmax(0, 15ch) minmax(0, 1fr); gap: 4px 26px; padding: 16px 20px; background: var(--panel); }
+.fact dt { font-weight: 600; color: var(--strong); font-size: 15px; }
+.fact dd { color: var(--dim); font-size: 15px; }
+@media (max-width: 620px) { .fact { grid-template-columns: 1fr; } }
+
+code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.88em;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+pre {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px 18px;
+  overflow-x: auto;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--text);
+}
+pre .c { color: var(--dimmer); }
+
+footer { padding: 40px 0 64px; border-top: 1px solid var(--line); color: var(--dimmer); font-size: 14.5px; }
+footer a { color: var(--dim); }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="top">
+    <div class="logo">BIG <span>DL</span></div>
+  </header>
+
+  <div class="hero">
+    <h1>Colle un lien. Recupere le fichier.</h1>
+    <p class="sub">Un telechargeur de medias pour Windows : video, audio ou photo depuis YouTube, Instagram, TikTok, X et SoundCloud. Un seul executable, rien a installer. Seules les photos Instagram demandent un fichier de cookies.</p>
+    <p class="get">
+      <a class="btn" href="https://github.com/NotDjz/Big_download/releases/latest">Voir la derniere version</a>
+      <small>~99 Mo &middot; Windows 10 et 11 &middot; <a href="https://github.com/NotDjz/Big_download">code source</a></small>
+    </p>
+  </div>
+
+  <figure class="shot">
+    <img src="screenshot.png" alt="L'interface de BIG DL : a gauche le champ de collage et les onglets, a droite la bibliotheque des fichiers telecharges." width="1100" height="760">
+    <figcaption>La bibliotheque montree ici est fictive.</figcaption>
+  </figure>
+
+  <section>
+    <h2>Ce qu'il se passe quand tu le lances</h2>
+    <p class="lede">C'est un executable non signe, telecharge depuis le depot d'un inconnu. Autant que tu saches exactement ce qu'il fait avant de double-cliquer.</p>
+    <dl class="facts">
+      <div class="fact">
+        <dt>Windows proteste</dt>
+        <dd>SmartScreen affiche un avertissement : le binaire n'a pas de certificat d'editeur, qui coute quelques centaines d'euros par an. « Informations complementaires » puis « Executer quand meme ».</dd>
+      </div>
+      <div class="fact">
+        <dt>Rien ne s'installe</dt>
+        <dd>Aucune entree au registre, aucun service, aucun raccourci : la supprimer, c'est supprimer le fichier. A chaque lancement elle deballe tout de meme son contenu — dont FFmpeg, qui pese l'essentiel des 99 Mo — dans <code>%TEMP%</code>, et l'efface en se fermant proprement.</dd>
+      </div>
+      <div class="fact">
+        <dt>Elle ecrit a cote d'elle</dt>
+        <dd>Les dossiers ci-dessous sont crees dans le repertoire de l'executable, jamais ailleurs. Range-le ou tu veux garder tes fichiers.</dd>
+      </div>
+      <div class="fact">
+        <dt>Le reseau</dt>
+        <dd>Un serveur local sur <code>127.0.0.1:5555</code>, jamais expose au reseau. Il refuse les requetes emises par une autre page web, ce qui empeche un site visite dans ton navigateur de lire ou supprimer tes fichiers ; un programme lance sur ta machine, lui, peut lui parler. Vers l'exterieur : uniquement les plateformes dont tu colles les liens, aucune telemetrie, aucune verification de mise a jour.</dd>
+      </div>
+    </dl>
+    <div class="tree" style="margin-top:22px">
+      <b>BigDownloader.exe</b><br>
+      <b>downloads/</b><br>
+      &nbsp;&nbsp;<b>Videos/</b> &nbsp; <i>les MP4</i><br>
+      &nbsp;&nbsp;<b>Music/</b> &nbsp;&nbsp; <i>les MP3</i><br>
+      &nbsp;&nbsp;<b>Photos/</b> &nbsp; <i>les JPG Instagram</i><br>
+      <b>.work/</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <i>fichiers en cours, vide au repos</i><br>
+      <b>temp_uploads/</b> <i>fichiers deposes pour la decoupe</i><br>
+      <b>cookies.txt</b> &nbsp; <i>si tu en ajoutes un, pour les photos Instagram</i>
+    </div>
+  </section>
+
+  <section>
+    <h2>Les plateformes</h2>
+    <p class="lede">Colle l'adresse et l'application reconnait la plateforme, puis propose les formats disponibles. Pour YouTube, utilise une adresse <code>youtube.com</code> ou <code>youtu.be</code> : les variantes <code>m.</code>, <code>music.</code> et <code>/live/</code> ne sont pas reconnues.</p>
+    <div class="sources">
+      <div class="src"><b>YouTube</b><span>Video jusqu'a la 4K, audio MP3, shorts, playlists entieres</span></div>
+      <div class="src"><b>Instagram</b><span>Reels et videos ; photos avec un fichier cookies</span></div>
+      <div class="src"><b>TikTok</b><span>Videos sans filigrane</span></div>
+      <div class="src"><b>X</b><span>Videos des publications</span></div>
+      <div class="src"><b>SoundCloud</b><span>Pistes en MP3</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Decouper sans reencoder tout le fichier</h2>
+    <p class="lede">L'onglet Decouper prend un fichier depuis ton disque, pas seulement ceux telecharges ici : MP4, MKV, WEBM, AVI, MOV, MP3, M4A, WAV, FLAC ou OGG, jusqu'a 2 Go. Deux poignees sur une piste, un apercu qui suit, et FFmpeg fait la coupe.</p>
+    <p>La coupe est reencodee pour tomber juste a l'image pres plutot qu'au groupe d'images le plus proche, ce qui evite le blanc ou le saut au demarrage. Le fichier d'origine n'est jamais touche : la coupe part dans <code>downloads/</code> avec le reste, sous <code>nom_v2.mp4</code>, puis <code>_v3</code>, et ainsi de suite.</p>
+  </section>
+
+  <section>
+    <h2>Depuis le code source</h2>
+    <p class="lede">Python 3.10 ou plus recent. FFmpeg n'a pas besoin d'etre installe sur la machine, mais il doit etre la avant <code>install.bat</code>, qui verifie sa presence et s'arrete sinon.</p>
+    <pre><span class="c">git clone https://github.com/NotDjz/Big_download.git</span>
+<span class="c">cd Big_download</span>
+py download_ffmpeg.py
+install.bat
+run.bat</pre>
+    <p>Lance ces commandes depuis la racine du depot : <code>install.bat</code> travaille dans le dossier courant. <code>build.bat</code> produit l'executable et y embarque FFmpeg.</p>
+  </section>
+
+  <section>
+    <h2>Quand un telechargement echoue</h2>
+    <p class="lede">La cause la plus frequente est une erreur 403.</p>
+    <p>Les plateformes durcissent regulierement leurs protections, et yt-dlp — la bibliotheque qui fait le travail — suit avec quelques jours de retard. L'executable embarque une version figee : il ne peut pas se mettre a jour tout seul. Une version de BIG DL vieille de quelques mois finira donc par se faire refuser.</p>
+    <p>Recupere la <a href="https://github.com/NotDjz/Big_download/releases/latest">derniere version</a>. Depuis le code source, <code>run.bat</code> met yt-dlp a jour a chaque lancement.</p>
+  </section>
+
+  <footer>
+    <p>BIG DL est distribue sous licence MIT. Telecharge ce que tu as le droit de telecharger.</p>
+    <p style="margin-top:8px"><a href="https://github.com/NotDjz/Big_download">github.com/NotDjz/Big_download</a></p>
+  </footer>
+</div>
+
+</body>
+</html>
