@@ -423,6 +423,14 @@ def _build_ydl_opts(download_type, url, quality, progress_hook, entry, job_tmp):
         'quiet': True,
         'no_warnings': True,
         'no_color': True,
+        # Toujours une seule video ici, y compris depuis _run_playlist_download,
+        # qui appelle cette fonction par video avec l'URL de chacune.
+        # Le type qui rend cette option porteuse est 'mp3' : start_download ne
+        # passe par clean_youtube_url (qui, lui, retire le '&list=') que pour
+        # 'youtube' et 'playlist'. Une URL de radio YouTube demandee en MP3
+        # arrive donc intacte, et sans cette ligne yt-dlp partait extraire la
+        # radio entiere, qui n'a pas de fin.
+        'noplaylist': True,
         # Une seule garde, posee sur les deux familles : c'est le propos du
         # docstring de _make_abort_hook, autant que le code le montre.
         'progress_hooks': [abort, progress_hook],
@@ -819,10 +827,30 @@ def _run_download(download_id, url, download_type, quality=None):
         shutil.rmtree(job_tmp, ignore_errors=True)
 
 
+def _flat_ydl_opts():
+    """Options des extractions plates : celles qui enumerent une playlist.
+
+    Le meme dict etait ecrit deux fois, a 250 lignes d'ecart. Toute option
+    ajoutee ensuite — un delai, des cookies, des retries — n'aurait atterri que
+    sur une des deux, et la divergence ne se serait vue qu'a l'usage.
+
+    Une fonction et non une constante de module : un dict partage finit mute.
+
+    Contrairement a ce que ce commentaire a d'abord affirme, y glisser
+    'noplaylist' ne casserait rien : verifie dans le source de yt-dlp 2026.08.19,
+    _yes_playlist() commence par `if not playlist_id or not video_id: return
+    not video_id` et sort donc avant meme de lire l'option. Les deux appelants
+    ne voient que des URL sans `v` — is_playlist_url() l'exige, et
+    clean_youtube_url() reecrit en `playlist?list=`. L'option n'a simplement
+    rien a faire ici.
+    """
+    return {'quiet': True, 'no_warnings': True, 'extract_flat': True}
+
+
 def _run_playlist_download(q, url, quality, entry, job_tmp):
     """Telecharge une playlist video par video avec suivi"""
     # D'abord recuperer la liste des videos
-    flat_opts = {'quiet': True, 'no_warnings': True, 'extract_flat': True}
+    flat_opts = _flat_ydl_opts()
     with yt_dlp.YoutubeDL(flat_opts) as ydl:
         playlist_info = ydl.extract_info(url, download=False)
 
@@ -1066,7 +1094,7 @@ def _playlist_info(url):
     requete partait alors au mauvais extracteur et l'echec etait opaque.
     C'est desormais /get-info qui tranche, avec is_playlist_url().
     """
-    with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True, 'extract_flat': True}) as ydl:
+    with yt_dlp.YoutubeDL(_flat_ydl_opts()) as ydl:
         info = ydl.extract_info(url, download=False)
 
     if info is None:
@@ -1105,14 +1133,21 @@ def get_video_info():
         # Restreint a YouTube : _run_playlist_download ne sait telecharger que
         # ca, et _playlist_info etiquetait 'youtube' n'importe quelle URL
         # portant ?list=, qui se faisait ensuite rejeter en 400.
-        if detect_platform(url) == 'youtube' and is_playlist_url(url):
-            return jsonify(_playlist_info(url))
-
         platform = detect_platform(url)
+        if platform == 'youtube' and is_playlist_url(url):
+            return jsonify(_playlist_info(url))
 
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
+            # is_playlist_url() a deja tranche que cette URL designe UNE video,
+            # mais rien ne le disait a yt-dlp : par defaut il voit le 'list=' et
+            # deroule la playlist. Sur une radio YouTube ('list=RD...'), generee
+            # a la volee, il pagine sans fin -- mesure : plus de 120 s sans
+            # repondre, contre 1,1 s avec cette option. Et le blocage tombait
+            # sur /get-info, la ou le bouton « Arreter » n'est pas encore
+            # affiche : l'interface restait figee sur « ... ».
+            'noplaylist': True,
         }
 
         cookies_file = _get_cookies_file()
