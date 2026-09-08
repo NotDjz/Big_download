@@ -130,6 +130,12 @@ TIMEOUT_MSG = f'Timeout: telechargement trop long ({DOWNLOAD_TIMEOUT // 60} min 
 # Meme raison que TIMEOUT_MSG : le message part vers le client, il ne doit
 # pas exister en deux litteraux qui divergeront au premier reformulage.
 CANCEL_MSG = 'Telechargement annule'
+# Combien de videos /get-info enumere pour decrire une playlist. Il n'en
+# affiche aucune : le compte vient de playlist_count, que la page annonce sans
+# qu'on ait a derouler la liste. Ce plafond n'existe donc que comme repli si ce
+# champ manque — et il evite surtout de paginer une route synchrone jusqu'au
+# bout. Mesure : 1593 videos en 7,3 s sans borne, 1,0 s avec.
+PLAYLIST_SCAN = 50
 
 
 # La liste des etats terminaux : _put_final les publie, _sse_response s'arrete
@@ -1094,17 +1100,15 @@ def _playlist_info(url):
     requete partait alors au mauvais extracteur et l'echec etait opaque.
     C'est desormais /get-info qui tranche, avec is_playlist_url().
     """
-    with yt_dlp.YoutubeDL(_flat_ydl_opts()) as ydl:
+    # La borne est posee ici et nulle part ailleurs : le telechargement, lui,
+    # a besoin de la liste entiere.
+    with yt_dlp.YoutubeDL({**_flat_ydl_opts(), 'playlistend': PLAYLIST_SCAN}) as ydl:
         info = ydl.extract_info(url, download=False)
 
     if info is None:
         raise ValueError("Impossible d'extraire les informations de la playlist")
 
-    videos = [{
-        'title': e.get('title', 'Sans titre'),
-        'duration': e.get('duration', 0),
-        'url': e.get('url', ''),
-    } for e in info.get('entries', []) if e]
+    enumerees = len([e for e in info.get('entries', []) if e])
 
     return {
         'success': True,
@@ -1112,8 +1116,13 @@ def _playlist_info(url):
         'platform': 'youtube',
         'title': info.get('title', 'Playlist'),
         'uploader': info.get('uploader', 'Inconnu'),
-        'video_count': len(videos),
-        'videos': videos[:50],
+        # playlist_count vient de la page et ne depend pas de la borne : une
+        # playlist de 1593 videos s'annonce 1593 meme si on n'en a enumere que
+        # PLAYLIST_SCAN. La longueur ne sert que de repli quand le champ manque
+        # -- et ce repli, lui, EST plafonne par la borne, d'ou le drapeau :
+        # annoncer « 50 » pour une playlist de 3000 serait un mensonge muet.
+        'video_count': info.get('playlist_count') or enumerees,
+        'video_count_partial': not info.get('playlist_count') and enumerees >= PLAYLIST_SCAN,
     }
 
 
@@ -1205,6 +1214,14 @@ def get_video_info():
             f.get('acodec', 'none') != 'none'
             for f in formats
         ) if formats else True
+        # Une image n'a pas de piste audio. Le repli ci-dessus (« aucun format
+        # extrait, donc on suppose de l'audio ») est pose par la branche meme
+        # qui rend is_photo vrai : le client affichait alors un bouton MP3 sur
+        # un post photo, et comme il est ajoute apres le bouton Photo, c'est
+        # lui qui finissait selectionne. Un clic sur « Telecharger » lancait un
+        # MP3 voue a l'echec sur une image.
+        if is_photo:
+            has_audio = False
 
         # Seul YouTube est supporte en playlist par _run_playlist_download :
         # annoncer is_playlist pour un set SoundCloud affichait une carte dont

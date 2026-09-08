@@ -251,38 +251,81 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function showResult(data) {
-        const thumbEl = document.getElementById('result-thumb');
-        const titleEl = document.getElementById('result-title');
-        const metaEl = document.getElementById('result-meta');
-        const formatsEl = document.getElementById('result-formats');
+    // Les trois helpers ci-dessous vont chercher #result-formats eux-memes,
+    // comme selectFormat le fait deja : le passer de main en main n'ajoutait
+    // qu'une variable a suivre.
+    function formatsZone() {
+        return document.getElementById('result-formats');
+    }
 
+    // Le cadre commun aux deux affichages de resultat : les memes gestes
+    // etaient ecrits deux fois.
+    function resultFrame(titre, parts, thumbnail) {
+        const thumbEl = document.getElementById('result-thumb');
         thumbEl.textContent = '';
-        if (data.thumbnail) {
+        if (thumbnail) {
             const img = document.createElement('img');
-            img.src = data.thumbnail;
+            img.src = thumbnail;
             img.alt = '';
             thumbEl.appendChild(img);
-            const play = document.createElement('span');
-            play.className = 'thumb-play';
-            play.textContent = '▶';
-            thumbEl.appendChild(play);
-        } else {
-            const play = document.createElement('span');
-            play.className = 'thumb-play';
-            play.textContent = '▶';
-            thumbEl.appendChild(play);
         }
+        // Pose dans les deux cas : les deux branches de l'ancien if/else
+        // ajoutaient ce meme chevron, ce qui n'en laissait qu'une utile.
+        const play = document.createElement('span');
+        play.className = 'thumb-play';
+        play.textContent = '\u25B6';
+        thumbEl.appendChild(play);
 
-        titleEl.textContent = data.title || 'Sans titre';
+        document.getElementById('result-title').textContent = titre;
+        metaSpans(document.getElementById('result-meta'), parts);
+        formatsZone().textContent = '';
+    }
 
+    // Et la fermeture, identique elle aussi.
+    function finishResult() {
+        const dlBtn = document.createElement('button');
+        dlBtn.className = 'go-btn';
+        dlBtn.style.marginLeft = 'auto';
+        dlBtn.textContent = 'Telecharger';
+        dlBtn.addEventListener('click', startDownload);
+        formatsZone().appendChild(dlBtn);
+        resultZone.classList.remove('hidden');
+    }
+
+    // Cinq sites construisaient ce bouton a la main, et deux le faisaient sans
+    // les <span> internes : faute de .format-label, ces deux-la s'affichaient
+    // sans le gras de tous les autres.
+    //
+    // Il pose et selectionne lui-meme. Sans cela, chaque site d'appel devait
+    // repeter `type` et `quality` pour rappeler selectFormat sur le bouton
+    // qu'il venait de creer.
+    function formatBtn({ label, detail, type, quality = null, selected = false }) {
+        const btn = document.createElement('button');
+        btn.className = 'format-btn';
+        const l = document.createElement('span');
+        l.className = 'format-label';
+        l.textContent = label;
+        btn.appendChild(l);
+        if (detail) {
+            const d = document.createElement('span');
+            d.className = 'format-detail';
+            d.textContent = detail;
+            btn.appendChild(d);
+        }
+        btn.addEventListener('click', () => selectFormat(btn, type, quality));
+        formatsZone().appendChild(btn);
+        if (selected) selectFormat(btn, type, quality);
+        return btn;
+    }
+
+    const QUALITY_LABELS = { 2160: '4K', 1440: '1440p', 1080: '1080p', 720: '720p', 480: '480p', 360: '360p' };
+
+    function showResult(data) {
         const parts = [];
         if (data.uploader && data.uploader !== 'N/A') parts.push(data.uploader);
         if (data.duration) parts.push(fmtTime(data.duration));
         if (data.platform) parts.push(data.platform.toUpperCase());
-        metaSpans(metaEl, parts);
-
-        formatsEl.textContent = '';
+        resultFrame(data.title || 'Sans titre', parts, data.thumbnail);
         selectedFormat = null;
 
         const qualities = data.available_qualities || [];
@@ -291,111 +334,43 @@ document.addEventListener('DOMContentLoaded', () => {
         const isPhoto = data._is_photo || (!hasVideo && !hasAudio && data.platform === 'instagram');
 
         if (isPhoto) {
-            const btn = document.createElement('button');
-            btn.className = 'format-btn';
-            const label = document.createElement('span');
-            label.className = 'format-label';
-            label.textContent = 'Photo';
-            btn.appendChild(label);
-            const detail = document.createElement('span');
-            detail.className = 'format-detail';
-            detail.textContent = 'Image';
-            btn.appendChild(detail);
-            btn.addEventListener('click', () => selectFormat(btn, 'photo', null));
-            formatsEl.appendChild(btn);
-            selectFormat(btn, 'photo', null);
+            formatBtn({ label: 'Photo', detail: 'Image', type: 'photo', selected: true });
         } else if (hasVideo) {
             if (qualities.length > 0) {
-                const labels = { 2160: '4K', 1440: '1440p', 1080: '1080p', 720: '720p', 480: '480p', 360: '360p' };
-                qualities.forEach((q, i) => {
-                    const btn = document.createElement('button');
-                    btn.className = 'format-btn';
-                    const label = document.createElement('span');
-                    label.className = 'format-label';
-                    label.textContent = labels[q] || (q + 'p');
-                    btn.appendChild(label);
-                    const detail = document.createElement('span');
-                    detail.className = 'format-detail';
-                    detail.textContent = 'MP4';
-                    btn.appendChild(detail);
-                    btn.addEventListener('click', () => selectFormat(btn, 'video', q));
-                    formatsEl.appendChild(btn);
-                    if (i === 0) selectFormat(btn, 'video', q);
-                });
+                qualities.forEach((q, i) => formatBtn({
+                    label: QUALITY_LABELS[q] || (q + 'p'), detail: 'MP4',
+                    type: 'video', quality: q, selected: i === 0,
+                }));
             } else {
-                const btn = document.createElement('button');
-                btn.className = 'format-btn';
-                btn.textContent = 'MP4';
-                btn.addEventListener('click', () => selectFormat(btn, 'video', null));
-                formatsEl.appendChild(btn);
-                selectFormat(btn, 'video', null);
+                formatBtn({ label: 'MP4', type: 'video', selected: true });
             }
         }
 
+        // Le MP3 ne prend la main que faute de video ET faute de photo. Sans
+        // le second test, un post photo dont l'extraction ne rend aucun format
+        // se voyait proposer un MP3 -- pose apres le bouton Photo, donc
+        // selectionne a sa place. Le serveur ne l'annonce plus, mais la regle
+        // « une image passe avant un son suppose » se lit mieux ici.
         if (hasAudio) {
-            const btn = document.createElement('button');
-            btn.className = 'format-btn';
-            const label = document.createElement('span');
-            label.className = 'format-label';
-            label.textContent = 'MP3';
-            btn.appendChild(label);
-            const detail = document.createElement('span');
-            detail.className = 'format-detail';
-            detail.textContent = 'Audio';
-            btn.appendChild(detail);
-            btn.addEventListener('click', () => selectFormat(btn, 'mp3', null));
-            formatsEl.appendChild(btn);
-
-            if (!hasVideo) selectFormat(btn, 'mp3', null);
+            formatBtn({ label: 'MP3', detail: 'Audio', type: 'mp3',
+                selected: !hasVideo && !isPhoto });
         }
 
-        const dlBtn = document.createElement('button');
-        dlBtn.className = 'go-btn';
-        dlBtn.style.marginLeft = 'auto';
-        dlBtn.textContent = 'Telecharger';
-        dlBtn.addEventListener('click', startDownload);
-        formatsEl.appendChild(dlBtn);
-
-        resultZone.classList.remove('hidden');
+        finishResult();
     }
 
     function showPlaylistResult(data) {
-        const thumbEl = document.getElementById('result-thumb');
-        const titleEl = document.getElementById('result-title');
-        const metaEl = document.getElementById('result-meta');
-        const formatsEl = document.getElementById('result-formats');
-
-        thumbEl.textContent = '';
-        const play = document.createElement('span');
-        play.className = 'thumb-play';
-        play.textContent = '▶';
-        thumbEl.appendChild(play);
-
-        titleEl.textContent = data.title || 'Playlist';
-        metaSpans(metaEl, [data.uploader, data.video_count + ' videos']);
-
-        formatsEl.textContent = '';
-        selectedFormat = { type: 'playlist', quality: null };
-
-        const vidBtn = document.createElement('button');
-        vidBtn.className = 'format-btn selected';
-        vidBtn.textContent = 'MP4 (all)';
-        vidBtn.addEventListener('click', () => {
-            selectedFormat = { type: 'playlist', quality: null };
-            formatsEl.querySelectorAll('.format-btn').forEach(b => b.classList.remove('selected'));
-            vidBtn.classList.add('selected');
-        });
-        formatsEl.appendChild(vidBtn);
-
-        const dlBtn = document.createElement('button');
-        dlBtn.className = 'go-btn';
-        dlBtn.style.marginLeft = 'auto';
-        dlBtn.textContent = 'Telecharger';
-        dlBtn.addEventListener('click', startDownload);
-        formatsEl.appendChild(dlBtn);
-
-        resultZone.classList.remove('hidden');
+        // « 50+ » quand le serveur n'a pas pu obtenir le compte exact : il
+        // n'enumere que les premieres videos, et ce plancher ne doit pas se
+        // faire passer pour un total.
+        const compte = data.video_count + (data.video_count_partial ? '+' : '');
+        resultFrame(data.title || 'Playlist', [data.uploader, compte + ' videos'], null);
+        // Le bouton avait son propre gestionnaire, qui refaisait a la main le
+        // menage de la classe .selected que selectFormat fait deja.
+        formatBtn({ label: 'MP4 (all)', type: 'playlist', selected: true });
+        finishResult();
     }
+
 
     function selectFormat(btn, type, quality) {
         const formatsEl = document.getElementById('result-formats');
@@ -405,7 +380,11 @@ document.addEventListener('DOMContentLoaded', () => {
         // currentInfo.platform vient du serveur ; le re-deduire ici faisait
         // diverger les deux detections (vimeo etait reconnu d'un cote seulement).
         const platform = currentInfo.platform;
-        if (type === 'mp3' || type === 'photo') {
+        if (type === 'playlist') {
+            // Ce cas manquait : sans lui, le bouton d'une playlist retombait
+            // dans la branche youtube ci-dessous et demandait une video seule.
+            selectedFormat = { type: 'playlist', quality: null };
+        } else if (type === 'mp3' || type === 'photo') {
             selectedFormat = { type: type, quality: null };
         } else if (platform === 'youtube') {
             selectedFormat = { type: 'youtube', quality: quality };

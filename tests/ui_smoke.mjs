@@ -63,6 +63,14 @@ async function main() {
 
   const results = [];
   const check = (nom, ok, detail) => results.push({ nom, ok: Boolean(ok), detail });
+  const until = async (expr, ms) => {
+    const stop = Date.now() + ms;
+    while (Date.now() < stop) {
+      if ((await js(expr)).val) return true;
+      await sleep(250);
+    }
+    return false;
+  };
   const MEDIA = "document.querySelector('#player-container video, #player-container audio')";
   // La liste est triee du plus recent au plus ancien et peut commencer par une
   // photo, qui n'ouvre pas d'element media. On vise donc la premiere entree
@@ -193,15 +201,6 @@ async function main() {
     return null;
   }
 
-  const until = async (expr, ms) => {
-    const stop = Date.now() + ms;
-    while (Date.now() < stop) {
-      if ((await js(expr)).val) return true;
-      await sleep(250);
-    }
-    return false;
-  };
-
   const pret = await until("!document.getElementById('cut-editor').classList.contains('hidden')", 60000);
   check('editeur de decoupe pret apres upload', pret, uploaded.val);
 
@@ -234,6 +233,117 @@ async function main() {
     check('aucun fichier laisse par la coupe annulee', apres === avant,
       `${avant} avant, ${apres} apres`);
   }
+
+  // ---- Le panneau de resultat, video et playlist.
+  //
+  // /get-info est intercepte : contrairement au SSE, une reponse JSON est un
+  // corps complet, donc Fetch.fulfillRequest la sert sans que le client y voie
+  // une connexion coupee. Aucun reseau, aucune vraie video.
+  //
+  // Ce que ce test attrape : les cinq boutons de format etaient construits a la
+  // main sur cinq sites, dont deux qui oubliaient les <span> internes et
+  // s'affichaient donc sans le gras des autres.
+  const b64 = (t) => Buffer.from(t, 'utf8').toString('base64');
+  let infoPayload = null;
+  ws.addEventListener('message', (e) => {
+    const m = JSON.parse(e.data);
+    if (m.method !== 'Fetch.requestPaused') return;
+    const { requestId, request } = m.params;
+    if (request.url.includes('/get-info') && infoPayload) {
+      c.send('Fetch.fulfillRequest', {
+        requestId, responseCode: 200,
+        responseHeaders: [{ name: 'Content-Type', value: 'application/json' }],
+        body: b64(JSON.stringify(infoPayload)),
+      });
+    } else {
+      c.send('Fetch.continueRequest', { requestId });
+    }
+  });
+  await c.send('Fetch.enable', { patterns: [{ urlPattern: '*/get-info', requestStage: 'Request' }] });
+
+  await js("document.querySelector('.tab[data-tab=\"download\"]').click()");
+  await sleep(200);
+
+  const demandeInfo = async (payload) => {
+    infoPayload = payload;
+    await js(`(() => {
+      const i = document.getElementById('url-input');
+      i.value = 'https://www.youtube.com/watch?v=TESTTEST123';
+      i.dispatchEvent(new Event('input', { bubbles: true }));
+      document.getElementById('go-btn').click();
+    })()`);
+    return until("!document.getElementById('result-zone').classList.contains('hidden')", 15000);
+  };
+
+  const vu = await demandeInfo({
+    title: 'Une video de test', uploader: 'Personne', duration: 100,
+    platform: 'youtube', available_qualities: [1080, 720], has_audio: true,
+  });
+  check('le panneau de resultat s ouvre', vu, `visible = ${vu}`);
+
+  if (vu) {
+    const boutons = (await js(
+      "JSON.stringify([...document.querySelectorAll('#result-formats .format-btn')]"
+      + ".map(b => ({t: b.textContent, sel: b.classList.contains('selected'),"
+      + " lab: !!b.querySelector('.format-label')})))")).val;
+    const liste = JSON.parse(boutons || '[]');
+    check('trois formats proposes', liste.length === 3,
+      liste.map((b) => b.t).join(' | '));
+    // Le point du test : plus aucun bouton sans son .format-label.
+    check('chaque format a son libelle', liste.every((b) => b.lab),
+      `${liste.filter((b) => b.lab).length}/${liste.length}`);
+    check('la meilleure qualite est preselectionnee',
+      liste.length > 0 && liste[0].sel && !liste.slice(1).some((b) => b.sel),
+      liste.map((b) => (b.sel ? '[' + b.t + ']' : b.t)).join(' '));
+  }
+
+  // Le cas sans qualites listees : c'est CE bouton-la qui etait construit sans
+  // <span>, donc sans le gras des autres. Avec des qualites, tous en avaient
+  // deja un et l'assertion ne discriminerait rien.
+  const vuNu = await demandeInfo({
+    title: 'Video sans qualites', platform: 'tiktok', height: 720, has_audio: false,
+  });
+  check('le panneau sans qualites s ouvre', vuNu, `visible = ${vuNu}`);
+  if (vuNu) {
+    const nu = JSON.parse((await js(
+      "JSON.stringify([...document.querySelectorAll('#result-formats .format-btn')]"
+      + ".map(b => ({t: b.textContent, lab: !!b.querySelector('.format-label')})))")).val || '[]');
+    check('format sans qualite : libelle present', nu.length === 1 && nu[0].lab,
+      nu.map((b) => `${b.t}(label=${b.lab})`).join(' '));
+  }
+
+  const vuPhoto = await demandeInfo({
+    title: 'Un post photo', platform: 'instagram', _is_photo: true,
+    has_audio: true, available_qualities: [],
+  });
+  check('le panneau photo s ouvre', vuPhoto, `visible = ${vuPhoto}`);
+  if (vuPhoto) {
+    const ph = JSON.parse((await js(
+      "JSON.stringify([...document.querySelectorAll('#result-formats .format-btn')]"
+      + ".map(b => ({t: b.textContent, sel: b.classList.contains('selected')})))")).val || '[]');
+    const choisi = ph.find((b) => b.sel);
+    check('la photo reste selectionnee, pas le MP3',
+      !!choisi && choisi.t.startsWith('Photo'),
+      ph.map((b) => (b.sel ? '[' + b.t + ']' : b.t)).join(' '));
+  }
+
+  const vuPl = await demandeInfo({
+    is_playlist: true, title: 'Ma playlist', uploader: 'Personne', video_count: 1593,
+  });
+  check('le panneau de playlist s ouvre', vuPl, `visible = ${vuPl}`);
+
+  if (vuPl) {
+    const pl = JSON.parse((await js(
+      "JSON.stringify({n: document.querySelectorAll('#result-formats .format-btn').length,"
+      + " sel: !!document.querySelector('#result-formats .format-btn.selected'),"
+      + " lab: !!document.querySelector('#result-formats .format-label'),"
+      + " meta: document.getElementById('result-meta').textContent})")).val || '{}');
+    check('un seul format pour une playlist', pl.n === 1, `${pl.n} bouton(s)`);
+    check('il est selectionne et libelle', pl.sel && pl.lab, `sel=${pl.sel} label=${pl.lab}`);
+    check('le compte total est affiche', (pl.meta || '').includes('1593'), pl.meta);
+  }
+
+  await c.send('Fetch.disable');
 
   const errs = c.events.filter((e) => e.method === 'Log.entryAdded' && e.params.entry.level === 'error')
     .map((e) => e.params.entry.text);
