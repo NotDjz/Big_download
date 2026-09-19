@@ -5,8 +5,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const resultZone = document.getElementById('result-zone');
     const progressZone = document.getElementById('progress-zone');
     const cancelBtn = document.getElementById('cancel-btn');
-    // Le job en cours : { id, es } ou null. Le bouton s'en sert, et
-    // hideProgress() le remet a zero pour qu'il ne pointe jamais dans le vide.
+    // The job in flight: { id, es } or null. The stop button reads it, and
+    // hideProgress() clears it so it never points at nothing.
+    //
+    // One phrase, two sites: the SSE fallback and the local path used to carry
+    // two different French sentences and now say the same thing. Rewording one
+    // and not the other would go unnoticed.
+    const STOPPED = 'Download stopped';
     let currentJob = null;
     const statusMsg = document.getElementById('status-msg');
 
@@ -21,9 +26,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     loadDownloadsList();
     setInterval(() => {
-        // La fiche et l'editeur masquent la bibliotheque (regle :has()) : sans
-        // cette garde, deux requetes et deux parcours de dossiers cote serveur
-        // tournaient pour ne produire aucun pixel.
+        // The result card and the editor hide the library (a :has() rule):
+        // without this guard, two requests and two server-side folder walks ran
+        // to produce no pixels at all.
         if (!document.getElementById('library').offsetParent) return;
         loadDownloadsList();
     }, 15000);
@@ -39,35 +44,34 @@ document.addEventListener('DOMContentLoaded', () => {
             tab.classList.add('active');
             document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
             document.getElementById('tab-' + tab.dataset.tab).classList.remove('hidden');
-            // La fiche et l'editeur occupent le plan de travail : changer
-            // d'onglet doit le rendre a la bibliotheque, sinon on garde sous
-            // les yeux le panneau de l'onglet qu'on vient de quitter.
+            // The card and the editor occupy the workspace: switching tabs
+            // has to hand it back to the library, otherwise you keep staring at
+            // the panel of the tab you just left.
             hideResult();
-            // Masquer sans detruire : resetCutEditor() libere aussi cutState,
-            // le fichier temporaire et la selection. Un aller-retour entre
-            // onglets jetait donc un upload deja termine.
+            // Hide without destroying: resetCutEditor() also releases
+            // cutState, the temporary file and the selection. A round trip
+            // between tabs therefore threw away a finished upload.
             const goingToCut = tab.dataset.tab === 'cut';
             const hasFile = Boolean(cutState.tempName);
-            // Mettre en pause : masquer sans arreter laissait l'audio tourner
-            // derriere un editeur invisible, donc sans aucun bouton pour l'arreter.
+            // Pause it: hiding without stopping left the audio playing behind
+            // an invisible editor, with no button anywhere to stop it.
             if (!goingToCut && cutState.media) cutState.media.pause();
             setCutView(goingToCut && hasFile);
         });
     });
 
-    // Un seul jeu d'icones. Avant, les lignes melangeaient des glyphes
-    // geometriques et des emojis, qui n'ont ni le meme poids ni la meme
-    // couleur ni le meme alignement.
-    // Une seule table pour l'enum que le serveur envoie : la classe CSS, le
-    // libelle et la valeur par defaut etaient exprimes a trois endroits.
+    // One icon set. The rows used to mix geometric glyphs with emoji, which
+    // share neither weight nor colour nor alignment.
+    // One table for the enum the server sends: the CSS class, the label and
+    // the default were each expressed in a different place.
     const MEDIA_KIND = { video: 'Video', audio: 'Audio', photo: 'Photo' };
 
-    // Un span par fait, separes par un noeud texte. Sans le noeud, copier la
-    // ligne donnait un seul mot colle ; sans les spans, le gap CSS n'avait
-    // rien a espacer et le point median restait.
-    // Les trois boutons d'action etaient trois copies du meme bloc, y compris
-    // du stopPropagation que chacun doit faire pour ne pas ouvrir le player.
-    // Memorise l'icone posee pour ne rien reconstruire quand elle ne change pas.
+    // One span per fact, separated by a text node. Without the node, copying
+    // the row produced one run-on word; without the spans, the CSS gap had
+    // nothing to space out and the middle dot stayed.
+    // The three action buttons were three copies of the same block, including
+    // the stopPropagation each needs so it does not open the player.
+    // Remember which icon is up, so nothing is rebuilt when it has not changed.
     function setBtnIcon(btn, name, filled) {
         if (btn.dataset.icon === name) return;
         btn.dataset.icon = name;
@@ -84,12 +88,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return btn;
     }
 
-    // Poster /cancel AVANT de fermer le flux SSE. Fermer d'abord declenche le
-    // finally du generateur cote serveur, qui retire l'entree du registre :
-    // /cancel ne trouvait alors plus rien a annuler, repondait succes, et le job
-    // continuait jusqu'au bout pendant que l'interface affichait « arrete ».
-    // La route ne fait que poser un drapeau, donc l'attente est de l'ordre de la
-    // milliseconde ; la course la borne si le serveur ne repond pas du tout.
+    // POST /cancel BEFORE closing the SSE stream. Closing first fires the
+    // server generator's finally, which drops the entry from the registry:
+    // /cancel then found nothing to cancel, answered success, and the job ran
+    // to completion while the interface said it had stopped. The route only
+    // raises a flag, so the wait is on the order of a millisecond; the race
+    // bounds it in case the server does not answer at all.
     async function postCancel(id) {
         try {
             await Promise.race([
@@ -97,22 +101,22 @@ document.addEventListener('DOMContentLoaded', () => {
                 new Promise((resolve) => setTimeout(resolve, 1500)),
             ]);
         } catch (err) {
-            // Le serveur n'a pas repondu : on rend la main quand meme.
+            // The server did not answer: hand control back anyway.
         }
     }
 
-    // La decoupe a son propre bouton, dans l'onglet Decouper. Comme currentJob,
-    // elle retient de quoi se defaire entierement : « Changer de fichier »
-    // n'est jamais desactive pendant une coupe et doit pouvoir l'arreter.
-    let currentCut = null;   // { id, es, btn, bar } ou null
+    // The cut has its own button, in the Cut tab. Like currentJob, it holds
+    // everything needed to undo itself: "Change file" is never disabled during
+    // a cut and has to be able to stop one.
+    let currentCut = null;   // { id, es, btn, bar } or null
 
     const cutCancelBtn = document.getElementById('cut-cancel-btn');
 
-    // Le pendant de resetJob() pour la decoupe, et pour la meme raison : un seul
-    // endroit qui rend l'onglet au repos, atteignable de partout. Quand il
-    // vivait dans followCutProgress, changer de fichier pendant une coupe
-    // laissait « Arreter » visible et pointe sur l'ancien job, dont l'evenement
-    // terminal reactivait ensuite « Couper » sous la nouvelle coupe.
+    // The counterpart of resetJob() for cuts, and for the same reason: one
+    // place that returns the tab to rest, reachable from anywhere. While it
+    // lived inside followCutProgress, changing files mid-cut left Stop on
+    // screen pointing at the old job, whose terminal event then re-enabled Cut
+    // underneath the new one.
     function endCut(delay) {
         const cut = currentCut;
         if (!cut) return;
@@ -121,21 +125,21 @@ document.addEventListener('DOMContentLoaded', () => {
         cutCancelBtn.classList.add('hidden');
         cutCancelBtn.disabled = false;
         cut.btn.disabled = false;
-        cut.btn.textContent = 'Couper';
+        cut.btn.textContent = 'Cut';
         if (delay) setTimeout(() => cut.bar.classList.add('hidden'), delay);
         else cut.bar.classList.add('hidden');
     }
 
     async function cancelCurrentCut() {
-        // Capture avant l'await : l'evenement 'cancelled' peut arriver pendant.
+        // Capture before the await: the 'cancelled' event can land during it.
         const cut = currentCut;
         if (!cut) return;
         cutCancelBtn.disabled = true;
         await postCancel(cut.id);
-        // FFmpeg est un sous-processus : il est tue pour de bon et l'evenement
-        // 'cancelled' arrive aussitot, qui remet l'onglet au repos. Mais si
-        // l'entree avait deja ete retiree du registre, cet evenement ne vient
-        // jamais — le bouton doit alors se reactiver de lui-meme.
+        // FFmpeg is a subprocess: it is killed outright and the 'cancelled'
+        // event follows immediately, returning the tab to rest. But if the
+        // entry had already been dropped from the registry, that event never
+        // comes, and the button has to re-enable itself.
         cutCancelBtn.disabled = false;
     }
 
@@ -190,7 +194,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const platform = detectPlatform(url);
 
         if (platform) {
-            // Le CSS met en capitales : le ternaire n'existait que pour le 'x'.
+            // The CSS uppercases it: the ternary existed only for the 'x'.
             platformBadge.textContent = platform;
             platformBadge.className = 'platform-badge';
             platformBadge.classList.remove('hidden');
@@ -199,9 +203,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         hideResult();
-        // Pas de masquage tant qu'un job vit : « Arreter » est dans cette zone,
-        // et une seule frappe dans le champ URL rendait un telechargement en
-        // cours invisible, donc inarretable.
+        // Do not hide it while a job is alive: Stop lives in that zone, and a
+        // single keystroke in the URL field made a running download invisible,
+        // and so impossible to stop.
         if (!currentJob) hideProgress();
         hideStatus();
     }
@@ -210,16 +214,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const url = urlInput.value.trim();
         if (!url) return;
 
-        // Plus de filtrage ici : c'est le serveur qui possede la semantique des
-        // URL, et sa liste differait de celle-ci (vimeo n'etait connu que d'un
-        // cote). detectPlatform ne sert plus qu'au badge pendant la frappe.
+        // No filtering here any more: URL semantics belong to the server, and
+        // its list differed from this one (vimeo was known to only one side).
+        // detectPlatform now only feeds the badge while you type.
         fetchInfo(url);
     }
 
     async function fetchInfo(url) {
         goBtn.disabled = true;
         goBtn.textContent = '...';
-        showStatus('Recuperation des infos...', 'loading');
+        showStatus('Reading the link...', 'loading');
         hideResult();
 
         try {
@@ -237,30 +241,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
             currentInfo = data;
             currentInfo._url = url;
-            // C'est le serveur qui dit si c'est une playlist. Le client
-            // choisissait l'endpoint sur sa propre detection, qui pouvait
-            // contredire la sienne.
+            // The server says whether this is a playlist. The client used to
+            // pick the endpoint from its own detection, which could contradict
+            // the server's.
             if (data.is_playlist) showPlaylistResult(data);
             else showResult(data);
             hideStatus();
         } catch (err) {
-            showStatus('Erreur: ' + err.message, 'error');
+            showStatus('Error: ' + err.message, 'error');
         } finally {
             goBtn.disabled = false;
-            goBtn.textContent = 'Telecharger';
+            goBtn.textContent = 'Download';
         }
     }
 
-    // Les trois helpers ci-dessous vont chercher #result-formats eux-memes,
-    // comme selectFormat le fait deja : le passer de main en main n'ajoutait
-    // qu'une variable a suivre.
+    // The three helpers below fetch #result-formats themselves, as
+    // selectFormat already does: passing it from hand to hand only added one
+    // more variable to follow.
     function formatsZone() {
         return document.getElementById('result-formats');
     }
 
-    // Le cadre commun aux deux affichages de resultat : les memes gestes
-    // etaient ecrits deux fois.
-    function resultFrame(titre, parts, thumbnail) {
+    // The frame shared by both result panels: the same gestures were written
+    // out twice.
+    function resultFrame(title, parts, thumbnail) {
         const thumbEl = document.getElementById('result-thumb');
         thumbEl.textContent = '';
         if (thumbnail) {
@@ -269,36 +273,36 @@ document.addEventListener('DOMContentLoaded', () => {
             img.alt = '';
             thumbEl.appendChild(img);
         }
-        // Pose dans les deux cas : les deux branches de l'ancien if/else
-        // ajoutaient ce meme chevron, ce qui n'en laissait qu'une utile.
+        // Added in both cases: the two branches of the old if/else appended
+        // this same chevron, which left only one of them doing any work.
         const play = document.createElement('span');
         play.className = 'thumb-play';
         play.textContent = '\u25B6';
         thumbEl.appendChild(play);
 
-        document.getElementById('result-title').textContent = titre;
+        document.getElementById('result-title').textContent = title;
         metaSpans(document.getElementById('result-meta'), parts);
         formatsZone().textContent = '';
     }
 
-    // Et la fermeture, identique elle aussi.
+    // And the closing act, identical as well.
     function finishResult() {
         const dlBtn = document.createElement('button');
         dlBtn.className = 'go-btn';
         dlBtn.style.marginLeft = 'auto';
-        dlBtn.textContent = 'Telecharger';
+        dlBtn.textContent = 'Download';
         dlBtn.addEventListener('click', startDownload);
         formatsZone().appendChild(dlBtn);
         resultZone.classList.remove('hidden');
     }
 
-    // Cinq sites construisaient ce bouton a la main, et deux le faisaient sans
-    // les <span> internes : faute de .format-label, ces deux-la s'affichaient
-    // sans le gras de tous les autres.
+    // Five sites built this button by hand, and two of them did it without the
+    // inner <span>s: lacking .format-label, those two rendered without the
+    // weight every other one has.
     //
-    // Il pose et selectionne lui-meme. Sans cela, chaque site d'appel devait
-    // repeter `type` et `quality` pour rappeler selectFormat sur le bouton
-    // qu'il venait de creer.
+    // It appends and selects itself. Without that, each call site had to repeat
+    // `type` and `quality` to call selectFormat back on the button it had just
+    // created.
     function formatBtn({ label, detail, type, quality = null, selected = false }) {
         const btn = document.createElement('button');
         btn.className = 'format-btn';
@@ -325,7 +329,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data.uploader && data.uploader !== 'N/A') parts.push(data.uploader);
         if (data.duration) parts.push(fmtTime(data.duration));
         if (data.platform) parts.push(data.platform.toUpperCase());
-        resultFrame(data.title || 'Sans titre', parts, data.thumbnail);
+        resultFrame(data.title || 'Untitled', parts, data.thumbnail);
         selectedFormat = null;
 
         const qualities = data.available_qualities || [];
@@ -346,11 +350,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        // Le MP3 ne prend la main que faute de video ET faute de photo. Sans
-        // le second test, un post photo dont l'extraction ne rend aucun format
-        // se voyait proposer un MP3 -- pose apres le bouton Photo, donc
-        // selectionne a sa place. Le serveur ne l'annonce plus, mais la regle
-        // « une image passe avant un son suppose » se lit mieux ici.
+        // MP3 only takes the selection in the absence of video AND of a
+        // photo. Without the second test, a photo post whose extraction yields
+        // no formats was offered an MP3, added after the Photo button and so
+        // selected in its place. The server no longer claims audio there, but
+        // the rule "an image outranks an assumed sound" reads better here.
         if (hasAudio) {
             formatBtn({ label: 'MP3', detail: 'Audio', type: 'mp3',
                 selected: !hasVideo && !isPhoto });
@@ -360,13 +364,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showPlaylistResult(data) {
-        // « 50+ » quand le serveur n'a pas pu obtenir le compte exact : il
-        // n'enumere que les premieres videos, et ce plancher ne doit pas se
-        // faire passer pour un total.
-        const compte = data.video_count + (data.video_count_partial ? '+' : '');
-        resultFrame(data.title || 'Playlist', [data.uploader, compte + ' videos'], null);
-        // Le bouton avait son propre gestionnaire, qui refaisait a la main le
-        // menage de la classe .selected que selectFormat fait deja.
+        // "50+" when the server could not get an exact count: it enumerates
+        // only the first videos, and that floor must not pass itself off as a
+        // total.
+        const count = data.video_count + (data.video_count_partial ? '+' : '');
+        resultFrame(data.title || 'Playlist', [data.uploader, count + ' videos'], null);
+        // The button carried its own handler, redoing by hand the .selected
+        // bookkeeping selectFormat already does.
         formatBtn({ label: 'MP4 (all)', type: 'playlist', selected: true });
         finishResult();
     }
@@ -377,20 +381,20 @@ document.addEventListener('DOMContentLoaded', () => {
         formatsEl.querySelectorAll('.format-btn').forEach(b => b.classList.remove('selected'));
         btn.classList.add('selected');
 
-        // currentInfo.platform vient du serveur ; le re-deduire ici faisait
-        // diverger les deux detections (vimeo etait reconnu d'un cote seulement).
+        // currentInfo.platform comes from the server; re-deriving it here made
+        // the two detections diverge (vimeo was recognised on one side only).
         const platform = currentInfo.platform;
         if (type === 'playlist') {
-            // Ce cas manquait : sans lui, le bouton d'une playlist retombait
-            // dans la branche youtube ci-dessous et demandait une video seule.
+            // This case was missing: without it a playlist's button fell into
+            // the youtube branch below and asked for a single video.
             selectedFormat = { type: 'playlist', quality: null };
         } else if (type === 'mp3' || type === 'photo') {
             selectedFormat = { type: type, quality: null };
         } else if (platform === 'youtube') {
             selectedFormat = { type: 'youtube', quality: quality };
         } else {
-            // la qualite etait mise a null ici : choisir 480p telechargeait
-            // quand meme le flux le plus lourd que la plateforme propose.
+            // quality was set to null here: picking 480p still downloaded the
+            // heaviest stream the platform offers.
             selectedFormat = { type: 'social', quality: quality };
         }
     }
@@ -404,17 +408,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function downloadWithProgress(url, type, quality) {
-        // Defaire le precedent avant d'en ouvrir un autre. Sinon son
-        // EventSource restait ouvert, ses handlers appelaient resetJob() et
-        // fermaient le flux du nouveau ; et le telechargement abandonne
-        // continuait cote serveur sans que rien ne puisse plus l'arreter.
+        // Undo the previous one before opening another. Otherwise its
+        // EventSource stayed open, its handlers called resetJob() and closed the
+        // new one's stream; and the abandoned download carried on server-side
+        // with nothing left that could stop it.
         if (currentJob) {
             postCancel(currentJob.id);
             resetJob();
         }
         hideResult();
         showProgress();
-        updateProgress(0, 'Demarrage...', '', '');
+        updateProgress(0, 'Starting...', '', '');
 
         try {
             const body = { url, type };
@@ -440,24 +444,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 const msg = JSON.parse(event.data);
 
                 if (msg.status === 'downloading') {
-                    let status = 'Telechargement...';
+                    let status = 'Downloading...';
                     if (msg.current_video) {
                         status = 'Video ' + msg.current_video + '/' + msg.total_videos;
                     }
                     updateProgress(msg.percent || 0, status, msg.speed || '', msg.eta ? 'ETA: ' + msg.eta : '');
                 } else if (msg.status === 'processing') {
-                    updateProgress(100, msg.message || 'Traitement...', '', '');
+                    updateProgress(100, msg.message || 'Working...', '', '');
                 } else if (msg.status === 'playlist_start') {
                     updateProgress(0, 'Playlist: ' + msg.title + ' (' + msg.total_videos + ' videos)', '', '');
                 } else if (msg.status === 'playlist_video_start') {
                     updateProgress(0, 'Video ' + msg.current_video + '/' + msg.total_videos + ': ' + msg.video_title, '', '');
                 } else if (msg.status === 'playlist_video_error') {
-                    updateProgress(0, 'Erreur video ' + msg.current_video + '/' + msg.total_videos, '', '');
+                    updateProgress(0, 'Video ' + msg.current_video + '/' + msg.total_videos + ' failed', '', '');
                 } else if (msg.status === 'complete') {
                     resetJob();
-                    let message = 'Telecharge: ' + msg.title;
+                    let message = 'Downloaded: ' + msg.title;
                     if (msg.is_playlist) {
-                        message = 'Playlist terminee: ' + msg.title + ' (' + msg.total_videos + ' videos)';
+                        message = 'Playlist finished: ' + msg.title + ' (' + msg.total_videos + ' videos)';
                     } else if (msg.resolution) {
                         message += ' (' + msg.resolution + ')';
                     }
@@ -465,39 +469,40 @@ document.addEventListener('DOMContentLoaded', () => {
                     loadDownloadsList();
                 } else if (msg.status === 'cancelled') {
                     resetJob();
-                    showStatus(msg.message || 'Telechargement annule', 'error');
+                    showStatus(msg.message || STOPPED, 'error');
                     loadDownloadsList();
                 } else if (msg.status === 'error') {
                     resetJob();
-                    showStatus(msg.message || 'Erreur inconnue', 'error');
+                    showStatus(msg.message || 'Unknown error', 'error');
                 }
             };
 
             es.onerror = () => {
                 resetJob();
-                showStatus('Connexion perdue', 'error');
+                showStatus('Connection lost', 'error');
             };
 
         } catch (err) {
             hideProgress();
-            showStatus('Erreur: ' + err.message, 'error');
+            showStatus('Error: ' + err.message, 'error');
         }
     }
 
-    // Libere l'interface tout de suite, sans attendre que le worker accuse
-    // reception : un telechargement bloque la ou aucun hook yt-dlp ne passe ne
-    // repondra jamais, et l'utilisateur doit pouvoir relancer malgre tout.
+    // Frees the interface immediately, without waiting for the worker to
+    // acknowledge: a download stuck where no yt-dlp hook runs will never answer,
+    // and the user has to be able to start again regardless.
     async function cancelCurrentJob() {
         const job = currentJob;
         if (!job) return;
         cancelBtn.disabled = true;
         await postCancel(job.id);
         cancelBtn.disabled = false;
-        // Le job a pu se terminer pendant l'aller-retour : resetJob() a alors
-        // deja tourne, et ecraser son message de succes par « arrete » mentirait.
+        // The job may have finished during the round trip: resetJob() will
+        // already have run, and overwriting its success message with "stopped"
+        // would be a lie.
         if (currentJob !== job) return;
         resetJob();
-        showStatus('Telechargement arrete', 'error');
+        showStatus(STOPPED, 'error');
     }
 
     cancelBtn.addEventListener('click', cancelCurrentJob);
@@ -506,9 +511,9 @@ document.addEventListener('DOMContentLoaded', () => {
         progressZone.classList.remove('hidden');
     }
 
-    // Un seul endroit qui defait un job : fermer le flux, oublier la reference,
-    // masquer la zone. C'etait eparpille sur quatre sites et trois appels a
-    // hideProgress() l'oubliaient.
+    // One place that undoes a job: close the stream, forget the reference,
+    // hide the zone. This was spread over four sites and three calls to
+    // hideProgress() forgot the reference.
     function resetJob() {
         if (currentJob && currentJob.es) currentJob.es.close();
         currentJob = null;
@@ -544,17 +549,16 @@ document.addEventListener('DOMContentLoaded', () => {
         statusMsg.classList.add('hidden');
     }
 
-    // Unites et separateur decimal francais : le reste de l'interface est en
-    // francais, afficher '37.4 MB' au milieu detonnait.
-    // Formateurs hisses : passer un objet d'options a toLocaleString court-circuite
-    // le cache de V8 et reconstruit un Intl.NumberFormat a chaque appel.
-    const NUM0 = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 });
-    const NUM1 = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 1 });
+    // Formatters hoisted: passing an options object to toLocaleString bypasses
+    // V8's cache and rebuilds an Intl.NumberFormat on every call. Measured at
+    // 86x the cost per call, on a list that redraws often.
+    const NUM0 = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+    const NUM1 = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 });
 
     function formatSize(bytes) {
-        if (!bytes) return '0 o';
+        if (!bytes) return '0 B';
         const k = 1024;
-        const units = ['o', 'Ko', 'Mo', 'Go'];
+        const units = ['B', 'KB', 'MB', 'GB'];
         const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), units.length - 1);
         const n = bytes / Math.pow(k, i);
         return (i === 0 ? NUM0 : NUM1).format(n) + ' ' + units[i];
@@ -562,10 +566,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function timeAgo(timestamp) {
         const diff = Math.floor(Date.now() / 1000 - timestamp);
-        if (diff < 60) return 'a l\'instant';
-        if (diff < 3600) return 'il y a ' + Math.floor(diff / 60) + ' min';
-        if (diff < 86400) return 'il y a ' + Math.floor(diff / 3600) + ' h';
-        return 'il y a ' + Math.floor(diff / 86400) + ' j';
+        if (diff < 60) return 'just now';
+        if (diff < 3600) return Math.floor(diff / 60) + ' min ago';
+        if (diff < 86400) return Math.floor(diff / 3600) + ' h ago';
+        return Math.floor(diff / 86400) + ' d ago';
     }
 
     async function loadDownloadsList() {
@@ -575,8 +579,8 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const resp = await fetch('/list-downloads');
             const files = await resp.json();
-            // Avant le retour anticipe sur liste vide : sinon supprimer le
-            // dernier fichier laissait le pied de page sur ses anciens chiffres.
+            // Before the early return on an empty list: otherwise deleting the
+            // last file left the footer showing its old numbers.
             showStats(files);
 
             countEl.textContent = files.length > 0 ? files.length : '';
@@ -585,7 +589,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 listEl.textContent = '';
                 const empty = document.createElement('div');
                 empty.className = 'downloads-empty';
-                empty.textContent = 'Aucun fichier';
+                empty.textContent = 'Nothing here yet';
                 listEl.appendChild(empty);
                 return;
             }
@@ -619,10 +623,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const actions = document.createElement('div');
                 actions.className = 'dl-actions';
 
-                actions.appendChild(actionBtn('play', 'Lire', true, () => openPlayer(file)));
-                actions.appendChild(actionBtn('folder', "Ouvrir dans l'explorateur", false,
+                actions.appendChild(actionBtn('play', 'Play', true, () => openPlayer(file)));
+                actions.appendChild(actionBtn('folder', 'Show in Explorer', false,
                     () => fetch('/open-file/' + file.category + '/' + encodeURIComponent(file.name), { method: 'POST' })));
-                actions.appendChild(actionBtn('close', 'Supprimer', false,
+                actions.appendChild(actionBtn('close', 'Delete', false,
                     () => confirmDelete(file, row), 'danger'));
 
                 row.appendChild(actions);
@@ -636,7 +640,7 @@ document.addEventListener('DOMContentLoaded', () => {
             listEl.textContent = '';
             const empty = document.createElement('div');
             empty.className = 'downloads-empty';
-            empty.textContent = 'Erreur chargement';
+            empty.textContent = 'Could not load';
             listEl.appendChild(empty);
         }
     }
@@ -646,16 +650,16 @@ document.addEventListener('DOMContentLoaded', () => {
         overlay.className = 'confirm-overlay';
         const box = document.createElement('div');
         box.className = 'confirm-box';
-        box.innerHTML = '<div class="confirm-msg">Supprimer <strong>' +
-            file.name.replace(/</g, '&lt;') + '</strong> ?</div>';
+        box.innerHTML = '<div class="confirm-msg">Delete <strong>' +
+            file.name.replace(/</g, '&lt;') + '</strong>?</div>';
         const btns = document.createElement('div');
         btns.className = 'confirm-btns';
         const dismissBtn = document.createElement('button');
         dismissBtn.className = 'confirm-btn cancel';
-        dismissBtn.textContent = 'Annuler';
+        dismissBtn.textContent = 'Cancel';
         const okBtn = document.createElement('button');
         okBtn.className = 'confirm-btn ok';
-        okBtn.textContent = 'Supprimer';
+        okBtn.textContent = 'Delete';
         btns.appendChild(dismissBtn);
         btns.appendChild(okBtn);
         box.appendChild(btns);
@@ -675,34 +679,35 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await resp.json();
             if (data.success) {
                 rowEl.remove();
-                // Un seul rechargement : il rafraichit la liste, le compteur et
-                // le pied de page. Avant, c'etait un retrait optimiste plus un
-                // appel a /get-stats, soit deux parcours de dossiers.
+                // A single reload: it refreshes the list, the counter and the
+                // footer. This used to be an optimistic removal plus a call to
+                // /get-stats, which meant two folder walks.
                 loadDownloadsList();
             } else {
                 rowEl.style.opacity = '1';
-                showStatus(data.error || 'Erreur suppression', 'error');
+                showStatus(data.error || 'Could not delete', 'error');
             }
         } catch (err) {
             rowEl.style.opacity = '1';
-            showStatus('Erreur: ' + err.message, 'error');
+            showStatus('Error: ' + err.message, 'error');
         }
     }
 
-    // Derive de la liste deja chargee. /get-stats refaisait un parcours complet
-    // des trois dossiers cote serveur pour deux nombres que 'files' contient.
+    // Derived from the list already loaded. /get-stats walked all three server
+    // folders again for two numbers that 'files' already holds.
     function showStats(files) {
         const total = files.reduce((n, f) => n + (f.size || 0), 0);
+        const n = files.length;
         document.getElementById('footer-stats').textContent =
-            files.length + ' fichiers · ' + formatSize(total);
+            n + (n === 1 ? ' file, ' : ' files, ') + formatSize(total);
     }
 
     // Player modal + custom controls
     let seekAnimFrame = null;
 
-    // Elements du player, resolus une fois. updatePlayerUI tourne a 60 fps et
-    // refaisait six recherches par image (deux querySelector dans getMedia,
-    // quatre getElementById) pour des noeuds qui ne bougent pas de la session.
+    // Player elements, resolved once. updatePlayerUI runs at 60 fps and was
+    // redoing six lookups per frame (two querySelector inside getMedia, four
+    // getElementById) for nodes that do not move for the whole session.
     const PL = {};
     ['player-container', 'player-seek-fill', 'player-time', 'player-play-btn',
      'player-vol-icon', 'player-volume', 'player-modal'].forEach(id => {
@@ -711,8 +716,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let _media = null;
     function getMedia() {
-        // Reste sur le cache tant que l'element est encore dans le conteneur ;
-        // closePlayer le vide, ce qui invalide naturellement.
+        // Stay on the cache while the element is still in the container;
+        // closePlayer empties it, which invalidates naturally.
         if (_media && _media.parentNode === PL.container) return _media;
         _media = PL.container.querySelector('video, audio');
         return _media;
@@ -743,14 +748,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const pct = media.duration ? (media.currentTime / media.duration) * 100 : 0;
         fill.style.width = pct + '%';
         timeEl.textContent = fmtTime(media.currentTime) + ' / ' + fmtTime(media.duration);
-        // Ne redessiner qu'au changement : appele depuis la boucle rAF, ce bloc
-        // reconstruisait deux noeuds SVG a chaque image (60/s) pour une icone
-        // qui ne bouge que sur lecture/pause.
+        // Only redraw on change: called from the rAF loop, this block rebuilt
+        // two SVG nodes every frame, 60 a second, for an icon that moves only on
+        // play and pause.
         setBtnIcon(playBtn, media.paused ? 'play' : 'pause', true);
 
-        // Ne se replanifier qu'en lecture : la fonction se replanifiait depuis
-        // chacun de ses appelants, empilant des chaines que seekAnimFrame ne
-        // pouvait plus annuler - une video en pause repeignait a 60 fps.
+        // Only reschedule while playing: the function used to reschedule from
+        // each of its callers, stacking chains that seekAnimFrame could no
+        // longer cancel, so a paused video kept repainting at 60 fps.
         if (!media.paused && !media.ended) {
             seekAnimFrame = requestAnimationFrame(updatePlayerUI);
         }
@@ -794,8 +799,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const media = getMedia();
         const icon = PL['vol-icon'];
         if (!media) return;
-        // Meme jeu d'icones que les lignes. Les emojis 128264/5/6 restaient les
-        // seuls glyphes en couleur de l'interface, a cote de traces monochromes.
+        // The same icon set as the rows. Emoji 128264/5/6 were the only
+        // coloured glyphs left in the interface, sitting beside monochrome
+        // strokes.
         const name = (media.muted || media.volume === 0) ? 'mute'
                    : media.volume < 0.5 ? 'vol1' : 'vol2';
         setBtnIcon(icon, name, false);
@@ -851,15 +857,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const volSlider = PL.volume;
             el.volume = parseFloat(volSlider.value);
-            // Poser l'icone a l'ouverture : elle n'etait dessinee qu'au premier
-            // reglage du volume, l'entite HTML fournissant l'etat initial. En
-            // passant au SVG, le bouton restait vide jusqu'au premier clic.
+            // Draw the icon on open: it was only drawn on the first volume
+            // change, with an HTML entity providing the initial state. Once that
+            // moved to SVG, the button stayed empty until the first click.
             updateVolIcon();
 
-            // 'seeked' couvre le deplacement sur une video en pause, que la
-            // boucle rAF ne repeint plus. Pas de 'timeupdate' : il n'ajoute
-            // aucune transition et continue de tourner a 4 Hz dans une fenetre
-            // masquee, ou rAF est justement bride a zero.
+            // 'seeked' covers scrubbing a paused video, which the rAF loop no
+            // longer repaints. No 'timeupdate': it adds no smoothness and keeps
+            // firing at 4 Hz in a hidden window, which is exactly where rAF is
+            // throttled to nothing.
             ['play', 'pause', 'ended', 'loadedmetadata', 'seeked']
                 .forEach(ev => el.addEventListener(ev, updatePlayerUI));
 
@@ -867,13 +873,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         titleEl.textContent = file.name;
-        // MEDIA_KIND et non file.category : la ligne disait « Video » quand le
-        // player disait « Videos » pour le meme fichier.
+        // MEDIA_KIND and not file.category: the row said "Video" where the
+        // player said "Videos" for the same file.
         metaSpans(metaEl, [formatSize(file.size), MEDIA_KIND[file.media_type] || 'Video']);
 
         modal.classList.remove('hidden');
-        // Toujours necessaire : la media query a 820px repasse le body en
-        // overflow:auto, et la page defilait alors derriere le player ouvert.
+        // Still needed: the 820px media query puts the body back to
+        // overflow:auto, and the page then scrolled behind the open player.
         document.body.style.overflow = 'hidden';
     };
 
@@ -886,14 +892,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (media) media.pause();
 
         container.textContent = '';
-        _media = null;  // sinon la closure retient l'element detache et son tampon
+        _media = null;  // otherwise the closure keeps the detached element and its buffer
         modal.classList.add('hidden');
         document.body.style.overflow = '';
     }
 
-    // Cablage en JS plutot que par des attributs onclick : ceux-ci
-    // obligeaient a exposer quatre fonctions sur window et interdisaient une
-    // CSP sans 'unsafe-inline'.
+    // Wired in JS rather than through onclick attributes: those forced four
+    // functions onto window and ruled out a CSP without 'unsafe-inline'.
     document.getElementById('player-backdrop').addEventListener('click', closePlayer);
     const closeBtn = document.getElementById('player-close-btn');
     setBtnIcon(closeBtn, 'close', false);
@@ -902,8 +907,8 @@ document.addEventListener('DOMContentLoaded', () => {
     PL['vol-icon'].addEventListener('click', toggleMute);
 
     document.addEventListener('keydown', (e) => {
-        // PL.modal : ce handler est sur document, il tournait donc a chaque
-        // frappe dans le champ d'URL ou l'editeur de decoupe.
+        // PL.modal: this handler is on document, so it ran on every keystroke
+        // in the URL field or the cut editor.
         if (PL.modal.classList.contains('hidden')) return;
 
         if (e.key === 'Escape') {
@@ -941,13 +946,13 @@ document.addEventListener('DOMContentLoaded', () => {
         fill.style.width = '0%';
 
         const es = new EventSource('/cut-progress/' + cutId);
-        // endCut ferme le flux : c'est lui, et lui seul, qui defait une coupe.
+        // endCut closes the stream: it, and it alone, undoes a cut.
         currentCut = { id: cutId, es: es, btn: btn, bar: progressBarEl };
         es.onmessage = (e) => {
             const ev = JSON.parse(e.data);
             if (ev.status === 'progress') {
                 fill.style.width = ev.percent + '%';
-                statusEl.textContent = 'Decoupe en cours... ' + ev.percent + '%';
+                statusEl.textContent = 'Cutting... ' + ev.percent + '%';
             } else if (ev.status === 'complete') {
                 fill.style.width = '100%';
                 statusEl.textContent = ev.message + ' (' + formatSize(ev.size) + ')';
@@ -955,8 +960,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 endCut(1500);
                 loadDownloadsList();
             } else if (ev.status === 'cancelled' || ev.status === 'error') {
-                // 'cancelled' manquait : une coupe arretee laissait la barre a
-                // l'ecran et « Couper » desactive jusqu'au rechargement.
+                // 'cancelled' was missing: a stopped cut left the bar on screen
+                // and Cut disabled until the page was reloaded.
                 endCut();
                 statusEl.textContent = ev.message;
                 statusEl.className = 'trim-status error';
@@ -964,7 +969,7 @@ document.addEventListener('DOMContentLoaded', () => {
         };
         es.onerror = () => {
             endCut();
-            statusEl.textContent = 'Connexion perdue';
+            statusEl.textContent = 'Connection lost';
             statusEl.className = 'trim-status error';
         };
     }
@@ -1006,7 +1011,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (data.error) {
                 origText.textContent = data.error;
-                setTimeout(() => { origText.textContent = 'Glisse un fichier ici'; cutDropzone.classList.remove('dragover'); }, 3000);
+                setTimeout(() => { origText.textContent = 'Drop a file here'; cutDropzone.classList.remove('dragover'); }, 3000);
                 return;
             }
 
@@ -1018,8 +1023,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             showCutEditor(data);
         } catch (err) {
-            origText.textContent = 'Erreur upload: ' + err.message;
-            setTimeout(() => { origText.textContent = 'Glisse un fichier ici'; cutDropzone.classList.remove('dragover'); }, 3000);
+            origText.textContent = 'Upload failed: ' + err.message;
+            setTimeout(() => { origText.textContent = 'Drop a file here'; cutDropzone.classList.remove('dragover'); }, 3000);
         }
     }
 
@@ -1052,16 +1057,16 @@ document.addEventListener('DOMContentLoaded', () => {
         setupCutRangeHandles();
     }
 
-    // Un seul endroit ou l'invariant « editeur visible <=> depot masque » est
-    // ecrit ; il l'etait a trois, dans les deux sens.
+    // One place where the invariant "editor visible <=> dropzone hidden" is
+    // written down; it used to be written in three, in both directions.
     function setCutView(showEditor) {
         cutEditor.classList.toggle('hidden', !showEditor);
         cutUploadZone.classList.toggle('hidden', showEditor);
     }
 
     function resetCutEditor() {
-        // « Changer de fichier » n'est jamais desactive pendant une coupe : il
-        // faut donc l'arreter pour de bon, pas seulement masquer l'editeur.
+        // "Change file" is never disabled during a cut, so the cut has to be
+        // stopped for real, not just hidden behind the editor.
         if (currentCut) {
             postCancel(currentCut.id);
             endCut();
@@ -1071,7 +1076,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (cutState.media) cutState.media.pause();
         cutState = { tempName: null, originalName: null, duration: 0, startPct: 0, endPct: 1, media: null };
         cutFileInput.value = '';
-        document.querySelector('.cut-dropzone-text').textContent = 'Glisse un fichier ici';
+        document.querySelector('.cut-dropzone-text').textContent = 'Drop a file here';
         cutDropzone.classList.remove('dragover');
     }
 
@@ -1127,10 +1132,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const handleStart = document.getElementById('cut-handle-start');
         const handleEnd = document.getElementById('cut-handle-end');
 
-        // Le rectangle est mesure au debut du glissement, pas a chaque
-        // deplacement : onMove ecrit quatre styles, donc relire la geometrie
-        // ensuite forcait une mise en page synchrone a chaque evenement de
-        // pointeur. La piste ne peut pas bouger pendant un glissement.
+        // The rect is measured once when the drag starts, not on every move:
+        // onMove writes four styles, so re-reading the geometry afterwards
+        // forced a synchronous layout on every pointer event. The track cannot
+        // move mid-drag.
         let dragRect = null;
 
         function pctFromEvent(e) {
@@ -1217,8 +1222,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const statusEl = document.getElementById('cut-status');
         const progressBar = document.getElementById('cut-progress-bar');
         btn.disabled = true;
-        btn.textContent = 'Decoupe...';
-        statusEl.textContent = 'Decoupe en cours... 0%';
+        btn.textContent = 'Cutting...';
+        statusEl.textContent = 'Cutting... 0%';
         statusEl.className = 'trim-status loading';
         statusEl.classList.remove('hidden');
 
@@ -1237,16 +1242,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.cut_id) {
                 followCutProgress(data.cut_id, statusEl, progressBar, btn);
             } else {
-                statusEl.textContent = data.error || 'Erreur inconnue';
+                statusEl.textContent = data.error || 'Unknown error';
                 statusEl.className = 'trim-status error';
                 btn.disabled = false;
-                btn.textContent = 'Couper';
+                btn.textContent = 'Cut';
             }
         } catch (err) {
-            statusEl.textContent = 'Erreur: ' + err.message;
+            statusEl.textContent = 'Error: ' + err.message;
             statusEl.className = 'trim-status error';
             btn.disabled = false;
-            btn.textContent = 'Couper';
+            btn.textContent = 'Cut';
         }
     });
 });

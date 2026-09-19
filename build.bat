@@ -1,28 +1,28 @@
 @echo off
 echo.
 echo   ======================================
-echo       COMPILATION DE BIG DOWNLOADER
+echo       BUILDING BIG DOWNLOADER
 echo   ======================================
 echo.
 
-REM Telecharger FFmpeg si absent
+REM Fetch FFmpeg if it is not already here
 py download_ffmpeg.py
 if errorlevel 1 (
-    echo [ERREUR] Impossible de telecharger FFmpeg
+    echo [ERROR] Could not download FFmpeg
     pause
     exit /b 1
 )
 echo.
 
-REM Installer PyInstaller
+REM Install PyInstaller
 py -m pip install pyinstaller
 
-REM yt-dlp est fige dans l'exe et ne pourra plus se mettre a jour : un
-REM binaire construit sur une version ancienne se fait bloquer en 403 des
-REM que la plateforme durcit ses protections.
+REM yt-dlp is frozen into the exe and can never update itself: a binary built
+REM on an old version starts getting 403s as soon as a platform tightens its
+REM protections.
 py -m pip install --upgrade yt-dlp
 
-REM Compiler
+REM Build
 py -m PyInstaller --noconfirm --onefile --windowed --name BigDownloader ^
     --icon "icon.ico" ^
     --add-data "templates;templates" ^
@@ -35,7 +35,7 @@ py -m PyInstaller --noconfirm --onefile --windowed --name BigDownloader ^
     app.py
 
 echo.
-echo   Compilation terminee !
-echo   L'executable se trouve dans le dossier "dist".
+echo   Build finished.
+echo   The executable is in the "dist" folder.
 echo.
 pause

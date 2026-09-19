@@ -1,9 +1,9 @@
-"""Lance Flask + Chrome headless, execute tests/ui_smoke.mjs, nettoie.
+"""Start Flask and headless Chrome, run tests/ui_smoke.mjs, clean up.
 
     py tests/run_ui_smoke.py
 
-Prerequis : Node 22+ (WebSocket global natif) et Chrome ou Edge installe. Ne touche a aucun
-fichier du depot ; le profil Chrome est jetable et cree dans le dossier temp.
+Requires Node 22+ (for the global WebSocket) and Chrome or Edge. It touches no
+file in the repository; the Chrome profile is disposable, created under temp.
 """
 import os
 import shutil
@@ -26,7 +26,7 @@ CHROME_CANDIDATES = (
 
 
 def _busy(port):
-    """Vrai si quelque chose ecoute deja sur ce port."""
+    """True if something is already listening on that port."""
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=0.3):
             return True
@@ -47,16 +47,16 @@ def _wait(port, timeout=25):
 
 def main():
     sys.path.insert(0, str(ROOT))
-    import app  # noqa: E402  (le serveur est le sujet du test)
+    import app  # noqa: E402  (the server is the subject of the test)
 
-    # Sans ces gardes, un BIG DL deja lance ou un Chrome oublie repondrait a
-    # l attente et la suite testerait un autre processus que celui qu elle croit,
-    # en rapportant tout vert pour du code jamais charge.
+    # Without these guards, a BIG DL already running or a forgotten Chrome
+    # would answer the wait, and the suite would test a different process than
+    # it believes, reporting all green for code that was never loaded.
     if _busy(app.PORT):
-        print(f"ECHEC : le port {app.PORT} est deja pris. Ferme BIG DL avant de lancer le test.")
+        print(f"FAILED: port {app.PORT} is already taken. Close BIG DL before running the test.")
         return 2
     if _busy(CDP_PORT):
-        print(f"ECHEC : le port {CDP_PORT} est deja pris (Chrome oublie ?).")
+        print(f"FAILED: port {CDP_PORT} is already taken (a forgotten Chrome?).")
         return 2
 
     threading.Thread(
@@ -64,12 +64,12 @@ def main():
         daemon=True,
     ).start()
     if not _wait(app.PORT):
-        print("ECHEC : le serveur Flask n'a pas demarre")
+        print("FAILED: the Flask server did not start")
         return 2
 
     chrome = next((c for c in CHROME_CANDIDATES if Path(c).exists()), None)
     if not chrome:
-        print("ECHEC : ni Chrome ni Edge trouve")
+        print("FAILED: neither Chrome nor Edge found")
         return 2
 
     profile = tempfile.mkdtemp(prefix="bigdl-uismoke-")
@@ -83,17 +83,17 @@ def main():
     )
     try:
         if not _wait(CDP_PORT):
-            print("ECHEC : Chrome n'expose pas CDP")
+            print("FAILED: Chrome is not exposing CDP")
             return 2
         env = {**os.environ, "CDP_PORT": str(CDP_PORT), "APP_URL": f"http://localhost:{app.PORT}"}
         try:
             return subprocess.call(
                 ["node", str(ROOT / "tests" / "ui_smoke.mjs")], env=env, timeout=300)
         except FileNotFoundError:
-            print("ECHEC : node introuvable dans le PATH (Node 22+ requis)")
+            print("FAILED: node not found on PATH (Node 22+ required)")
             return 2
         except subprocess.TimeoutExpired:
-            print("ECHEC : le test a depasse 5 minutes")
+            print("FAILED: the test ran past 5 minutes")
             return 2
     finally:
         proc.kill()
@@ -102,19 +102,19 @@ def main():
         except subprocess.TimeoutExpired:
             pass
         shutil.rmtree(profile, ignore_errors=True)
-        # Le test televerse une video pour la couper, et une coupe annulee garde
-        # volontairement sa source : sans ce nettoyage, chaque execution laisse
-        # plusieurs centaines de Mo dans temp_uploads/ jusqu'au balayage horaire.
-        # Sans risque pour un travail en cours : la fonction refuse de demarrer
-        # quand le port de l'application est deja pris.
+        # The test uploads a video to cut it, and a cancelled cut deliberately
+        # keeps its source: without this cleanup, every run leaves several
+        # hundred MB in temp_uploads/ until the hourly sweep. No risk to work in
+        # progress: this function refuses to start when the application's port
+        # is already taken.
         for leftover in app.TEMP_FOLDER.glob('*'):
             if leftover.is_file():
                 try:
                     leftover.unlink()
                 except OSError:
-                    # missing_ok ne couvre pas un verrou Windows : FFmpeg peut
-                    # tenir encore le fichier quelques instants. Le balayage
-                    # horaire de l'application s'en chargera.
+                    # missing_ok does not cover a Windows lock: FFmpeg may
+                    # still hold the file for a moment. The application's hourly
+                    # sweep will get it.
                     pass
 
 

@@ -1,60 +1,72 @@
 # BIG DL
 
-Telecharge des videos, audios et photos depuis YouTube, Instagram, TikTok, X/Twitter et SoundCloud. Decoupe tes fichiers audio/video avec un editeur visuel integre.
+Download videos, audio and photos from YouTube, Instagram, TikTok, X/Twitter and SoundCloud. Trim any audio or video file with the built-in visual editor.
 
-![L'interface de BIG DL : rail d'action a gauche, bibliotheque a droite](docs/screenshot.png)
+![The BIG DL interface: the action rail on the left, the library on the right](docs/screenshot.png)
 
-*Bibliotheque de demonstration.*
+*The library shown here is made up.*
 
-## Fonctionnalites
+## What it does
 
-- **YouTube** — video (jusqu'a 4K), audio MP3, shorts, playlists
-- **Instagram** — reels, videos, photos (cookies requis pour les photos)
-- **TikTok** — videos sans watermark
-- **X / Twitter** — videos
-- **SoundCloud** — audio MP3
-- **Decoupe** — onglet dedie pour couper un fichier audio/video avec un slider visuel, precision a la frame
-- **Arret** — un bouton pour stopper un telechargement ou une decoupe en cours, et repartir tout de suite sur un autre
-- **Bibliotheque** — tout ce qui a ete telecharge, avec lecture integree, ouverture dans l'explorateur et suppression
+- **YouTube** — video up to 4K, MP3 audio, shorts, whole playlists
+- **Instagram** — reels, videos, photos (photos need a cookies file)
+- **TikTok** — videos without the watermark
+- **X / Twitter** — videos from posts
+- **SoundCloud** — tracks as MP3
+- **Trimming** — a dedicated tab to cut an audio or video file with a visual slider, frame-accurate
+- **Stop** — a button to stop a download or a cut in progress, and start another right away
+- **Library** — everything downloaded so far, with playback, reveal in Explorer and deletion
 
-## Installation
+## Install
 
-### Option 1 : Executable Windows (recommande)
+### Option 1: the Windows executable (recommended)
 
-Telecharger `BigDownloader.exe` depuis la [derniere release](https://github.com/NotDjz/Big_download/releases/latest) et lancer. C'est tout.
+Download `BigDownloader.exe` from the [latest release](https://github.com/NotDjz/Big_download/releases/latest) and run it. That is all.
 
-### Option 2 : Depuis le code source
+Windows SmartScreen will object: the binary is unsigned. Choose "More info", then "Run anyway". What the executable does to your machine is laid out on [the project page](https://notdjz.github.io/Big_download/).
+
+### Option 2: from source
 
 ```bash
 git clone https://github.com/NotDjz/Big_download.git
 cd Big_download
+py download_ffmpeg.py
 install.bat
 run.bat
 ```
 
-Prerequis : Python 3.10+, FFmpeg dans le PATH (ou lance `py download_ffmpeg.py` pour le telecharger automatiquement).
+Requirements: Python 3.10+. FFmpeg does not have to be installed system-wide, but it does have to be there before `install.bat`, which checks for it and stops if it is missing — that is what `py download_ffmpeg.py` is for.
 
-## Utilisation
+## Using it
 
-1. Lancer l'application
-2. Coller un lien dans la barre de recherche
-3. Choisir le format (video, audio, photo)
-4. Telecharger
+1. Launch the application
+2. Paste a link into the field
+3. Pick a format (video, audio, photo)
+4. Download
 
-Les fichiers sont ranges automatiquement dans `downloads/Videos/`, `downloads/Music/` et `downloads/Photos/`.
+Files are filed automatically into `downloads/Videos/`, `downloads/Music/` and `downloads/Photos/`, in the executable's own directory.
 
-### Outil de decoupe
+### Trimming
 
-Onglet **Decouper** : glisser un fichier audio ou video, ajuster les poignees du slider pour selectionner la portion a garder, cliquer Couper. Le fichier est sauvegarde avec le nom original + `_v2`, `_v3`, etc.
+Open the **Cut** tab, drop in an audio or video file, drag the two handles to the part you want to keep, and click Cut. The result is saved next to the original name with `_v2`, then `_v3`, and so on. The original file is never touched.
 
-## Cookies Instagram
+## Instagram cookies
 
-Les **photos** Instagram necessitent un fichier cookies (les videos/reels fonctionnent sans).
+Instagram **photos** need a cookies file. Videos and reels work without one.
 
-1. Installer l'extension navigateur [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
-2. Aller sur instagram.com, se connecter
-3. Exporter les cookies
-4. Placer le fichier `cookies.txt` a cote de l'executable
+1. Install the [Get cookies.txt LOCALLY](https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc) browser extension
+2. Go to instagram.com and sign in
+3. Export the cookies
+4. Put the `cookies.txt` file beside the executable
+
+That file is your Instagram session in plain text. Keep it out of any repository.
+
+## Tests
+
+```bash
+py tests/server_tests.py      # server side, offline, a few seconds
+py tests/run_ui_smoke.py      # drives the real interface in headless Chrome
+```
 
 ## Build
 
@@ -63,7 +75,9 @@ py download_ffmpeg.py
 build.bat
 ```
 
-L'executable sort dans `dist/BigDownloader.exe`.
+The executable lands in `dist/BigDownloader.exe`.
+
+Distribute that file and nothing else. `dist/` is also where a portable run writes its own `downloads/`, `temp_uploads/` and `cookies.txt` — sharing the folder would share your Instagram session.
 
 ## Licence
 

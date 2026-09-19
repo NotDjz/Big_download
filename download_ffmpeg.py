@@ -1,4 +1,4 @@
-"""Télécharge ffmpeg.exe + ffprobe.exe depuis gyan.dev pour le bundle PyInstaller."""
+"""Fetch ffmpeg.exe and ffprobe.exe from gyan.dev for the PyInstaller bundle."""
 
 import io
 import os
@@ -12,12 +12,12 @@ NEEDED = {"ffmpeg.exe", "ffprobe.exe"}
 
 def main():
     if all(os.path.exists(os.path.join(DEST, n)) for n in NEEDED):
-        print("ffmpeg.exe et ffprobe.exe deja presents, skip.")
+        print("ffmpeg.exe and ffprobe.exe already here, skipping.")
         return
 
-    print(f"Telechargement de FFmpeg (~80 MB)...")
+    print("Downloading FFmpeg (~80 MB)...")
     data = urllib.request.urlopen(URL).read()
-    print("Extraction de ffmpeg.exe et ffprobe.exe...")
+    print("Extracting ffmpeg.exe and ffprobe.exe...")
 
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         for entry in zf.namelist():
@@ -29,7 +29,7 @@ def main():
 
     missing = [n for n in NEEDED if not os.path.exists(os.path.join(DEST, n))]
     if missing:
-        print(f"ERREUR: fichiers manquants: {missing}")
+        print(f"ERROR: missing files: {missing}")
         raise SystemExit(1)
 
     print("OK!")

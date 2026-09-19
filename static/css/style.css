@@ -1,15 +1,14 @@
 /* ============================================================
-   BIG DL — ardoise + cuivre
+   BIG DL — slate and copper
 
-   Toutes les couleurs passent par les tokens ci-dessous. Avant la
-   refonte il y avait 195 couleurs ecrites sur place et aucune
-   variable : changer d'accent demandait de relire la feuille entiere.
+   Every colour goes through the tokens below. Before the redesign there were
+   195 colours written inline and no variables at all: changing the accent
+   meant reading the whole sheet.
 
-   Le fond est un gris-bleu vraiment neutre, et l'accent est chaud.
-   C'est le contraste de temperature qui fait ressortir l'action —
-   l'ancien violet servait a la fois de fond et d'accent, donc rien
-   ne ressortait. Le violet subsiste au logo, pour rester raccord
-   avec l'icone de l'exe.
+   The ground is a genuinely neutral blue-grey, and the accent is warm. That
+   temperature contrast is what makes the action stand out — the old violet
+   served as both ground and accent, so nothing stood out at all. Violet
+   survives in the logo, to stay in step with the exe's icon.
    ============================================================ */
 
 @font-face {
@@ -26,10 +25,10 @@
     src: url('/static/fonts/archivo-latin-ext.woff2') format('woff2');
     font-weight: 400 800;
     font-display: swap;
-    /* U+0304/0308/0329 retires : declares dans les deux blocs, et le second
-       l'emporte. Un « Noel » en forme decomposee (e + U+0308) tirait donc les
-       32 Ko de latin-ext pour un glyphe deja present dans latin. U+0329 n'est
-       dans aucun des deux fichiers : le telechargement etait perdu d'avance. */
+    /* U+0304/0308/0329 removed: they were declared in both blocks, and the
+       second one wins. A decomposed "Noel" (e + U+0308) therefore pulled the
+       32 KB of latin-ext for a glyph already present in latin. U+0329 is in
+       neither file: that download was lost before it started. */
     unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
                    U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
                    U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
@@ -51,21 +50,21 @@
     --accent:      #e5893f;
     --accent-hi:   #f29b53;
     --accent-ink:  #1a1207;
-    /* Derive de --accent, sinon changer d'accent laissait ce lavis en arriere. */
+    /* Derived from --accent: otherwise changing the accent left this wash behind. */
     --accent-wash: color-mix(in srgb, var(--accent) 12%, transparent);
 
     --brand:       #8b6dff;
     --danger:      #e05252;
     --danger-hi:   #ef6a6a;
-    /* --ok a sa propre valeur : elle valait --t-photo, donc recolorer la
-       marque des photos recolorait tous les messages de succes. */
+    /* --ok has its own value: it used to be --t-photo, so recolouring the
+       photo marker recoloured every success message. */
     --ok:          #3fb98a;
     --scrim:       8 10 13;
 
-    /* Marques de type : fixes, independantes de l'accent. Le type est une
-       information, l'accent est une action — les coupler ferait clignoter
-       la liste a chaque changement de palette. La video, largement
-       majoritaire, recoit la marque la plus discrete. */
+    /* Type markers: fixed, independent of the accent. A type is information,
+       the accent is an action — coupling them would make the list flicker on
+       every palette change. Video, by far the most common, gets the quietest
+       marker. */
     --t-video:     #6e7889;
     --t-audio:     #e0a04a;
     --t-photo:     #3fb98a;
@@ -96,7 +95,7 @@ body {
     outline-offset: 2px;
 }
 
-/* ==================== SQUELETTE ==================== */
+/* ==================== SKELETON ==================== */
 
 .app {
     display: grid;
@@ -121,8 +120,8 @@ body {
     overflow: hidden;
 }
 
-/* La fiche d'un lien et l'editeur de decoupe prennent la place de la
-   bibliotheque : un seul endroit ou l'action se passe. */
+/* A link's card and the cut editor take the library's place: one single
+   spot where the action happens. */
 .workspace:has(> #result-zone:not(.hidden), > #cut-editor:not(.hidden)) > #library { display: none; }
 
 /* ==================== RAIL ==================== */
@@ -174,8 +173,8 @@ body {
 .search-input::placeholder { color: var(--dimmer); }
 .search-input:focus { outline: none; border-color: var(--accent); }
 
-/* Dans le flux, pas en absolu : superpose au champ, le badge recouvrait la fin
-   de l'URL — et dans un rail de 268 px une URL depasse toujours. */
+/* In the flow, not absolutely positioned: overlaid on the field, the badge
+   covered the end of the URL — and in a 268 px rail a URL always overflows. */
 .platform-badge {
     align-self: flex-start;
     font-size: 10px;
@@ -188,8 +187,8 @@ body {
     border-radius: var(--r-sm);
 }
 
-/* Trois boutons primaires et deux discrets qui etaient cinq blocs distincts.
-   La forme est commune, seules la couleur et la marge interne varient. */
+/* Three primary buttons and two quiet ones that used to be five separate
+   blocks. The shape is shared; only the colour and the padding differ. */
 .go-btn, .trim-cut-btn, .cut-reset-btn, .confirm-btn {
     border: none;
     border-radius: var(--r-md);
@@ -197,9 +196,9 @@ body {
     cursor: pointer;
     transition: background 0.15s;
 }
-/* Tailles conservees telles quelles : la fusion des cinq blocs avait fait
-   passer .go-btn de 14 a 13 px et .confirm-btn.ok de 600 a 700, par effet de
-   bord d'une deduplication. */
+/* Sizes kept exactly as they were: merging the five blocks had moved .go-btn
+   from 14 to 13 px and .confirm-btn.ok from 600 to 700, as a side effect of
+   deduplication. */
 .trim-cut-btn, .cut-reset-btn, .confirm-btn { font-size: 13px; }
 .go-btn, .trim-cut-btn { font-weight: 700; }
 .confirm-btn.ok { font-weight: 600; }
@@ -211,9 +210,9 @@ body {
 .confirm-btn.ok:hover { background: var(--danger-hi); }
 .go-btn:disabled, .trim-cut-btn:disabled { opacity: 0.5; cursor: default; }
 
-/* Pas de width:100% : inutile dans le rail (colonne flex, deja etire) et
-   nuisible dans .result-formats, ou un element flex a 100% passe seul sur sa
-   ligne et annule l'alignement a droite. */
+/* No width:100%: pointless in the rail (a flex column, already stretched) and
+   harmful in .result-formats, where a flex item at 100% takes a line to itself
+   and cancels the right alignment. */
 .go-btn { padding: 11px; }
 .trim-cut-btn, .cut-reset-btn { padding: 9px 18px; }
 .confirm-btn { padding: 8px 18px; }
@@ -252,12 +251,12 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
-/* Un seul composant : .status-msg et .trim-status etaient deux copies, et
-   .trim-status avait deja perdu son etat .loading — une decoupe en cours
-   affichait donc un lisere neutre au lieu du cuivre. */
-/* Discret mais toujours atteignable : il ne doit pas concurrencer l'action
-   principale, et il doit rester trouvable quand un telechargement se bloque.
-   Sert aux deux onglets : le geste est le meme des deux cotes. */
+/* One component: .status-msg and .trim-status were two copies, and
+   .trim-status had already lost its .loading state — so a running cut showed
+   a neutral edge instead of the copper one. */
+/* Quiet but always reachable: it must not compete with the main action, and
+   it must stay findable when a download gets stuck. It serves both tabs: the
+   gesture is the same on either side. */
 .cancel-btn {
     align-self: flex-start;
     background: none;
@@ -308,7 +307,7 @@ body {
 .open-folder-btn:hover { color: var(--accent); }
 #footer-stats { font-size: 11.5px; color: var(--dimmer); font-variant-numeric: tabular-nums; }
 
-/* ==================== BIBLIOTHEQUE ==================== */
+/* ==================== LIBRARY ==================== */
 
 .library { display: flex; flex-direction: column; min-height: 0; }
 
@@ -335,9 +334,9 @@ body {
 }
 .download-row:hover { background: var(--line-soft); }
 
-/* Sur ::before : l'ancien <div class="dl-edge"> etait un element vide pour
-   une decoration pure. 'video' est une regle et non l'absence de regle,
-   sinon un futur quatrieme type s'afficherait en silence comme une video. */
+/* On ::before: the old <div class="dl-edge"> was an empty element for pure
+   decoration. 'video' is a rule rather than the absence of one, otherwise a
+   future fourth type would silently render as a video. */
 .download-row::before { content: ''; align-self: stretch; }
 .download-row[data-type="video"]::before { background: var(--t-video); }
 .download-row[data-type="audio"]::before { background: var(--t-audio); }
@@ -394,7 +393,7 @@ body {
     text-align: center;
 }
 
-/* ==================== FICHE DU LIEN ==================== */
+/* ==================== RESULT CARD ==================== */
 
 .result-zone { padding: 24px; overflow-y: auto; }
 
@@ -447,7 +446,7 @@ body {
 .format-label { font-weight: 600; }
 .format-detail { font-size: 11px; color: var(--dim); }
 
-/* ==================== DECOUPE ==================== */
+/* ==================== CUT ==================== */
 
 .cut-upload-zone { display: flex; }
 .cut-dropzone {
@@ -639,10 +638,10 @@ body {
     transition: height 0.1s;
 }
 .player-seek-wrap:hover .player-seek-bar { height: 6px; }
-/* Pas de transition : le JS reecrit cette largeur a chaque image, donc chaque
-   frame demarrait une animation de 100 ms jamais achevee — et decalait la
-   barre de la tete de lecture. Celle de .progress-fill reste justifiee : elle
-   est pilotee par le SSE a ~1 Hz, ou le lissage sert vraiment. */
+/* No transition: the JS rewrites this width every frame, so each frame
+   started a 100 ms animation that never finished — and left the bar trailing
+   the playhead. The one on .progress-fill is still justified: it is driven by
+   SSE at about 1 Hz, where the smoothing genuinely helps. */
 .player-seek-fill {
     height: 100%;
     width: 0%;
@@ -679,7 +678,7 @@ body {
 .confirm-msg strong { color: var(--strong); }
 .confirm-btns { display: flex; gap: 9px; justify-content: flex-end; }
 
-/* ==================== DIVERS ==================== */
+/* ==================== ODDS AND ENDS ==================== */
 
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -36,78 +36,79 @@ app = Flask(__name__,
             static_folder=str(BUNDLE_DIR / "static"))
 app.config['MAX_CONTENT_LENGTH'] = 2 * 1024 * 1024 * 1024  # 2 GB
 
-# Windows ne connait pas .woff2 : sans ca les polices partaient en
-# application/octet-stream.
-# Windows lit les types MIME dans le registre, ou .js peut valoir text/plain.
-# Avec X-Content-Type-Options: nosniff le navigateur refuserait alors le
-# script, et l'interface serait inerte. On epingle ce dont on depend.
+# Windows reads MIME types from the registry, where .js can come back as
+# text/plain and .woff2 is unknown entirely. With X-Content-Type-Options:
+# nosniff the browser would then refuse the script and the interface would sit
+# there dead. Pin the types we depend on.
 for _ext, _mime in (('.woff2', 'font/woff2'), ('.js', 'text/javascript'),
                     ('.css', 'text/css'), ('.png', 'image/png')):
     mimetypes.add_type(_mime, _ext)
 
-# Chemin absolu plutot que le nom nu : CreateProcess cherche d'abord dans le
-# dossier de l'image, qui est aussi celui ou l'exe portable ecrit downloads/,
-# temp_uploads/ et cookies.txt. Un explorer.exe depose la serait lance a notre
-# place. L'attaquant doit deja executer du code sous la meme identite pour l'y
-# poser, donc ce n'est pas une faille — c'est deux lignes de durcissement.
+# An absolute path rather than the bare name: CreateProcess searches the
+# image's own directory first, and that is the very directory where the
+# portable exe writes downloads/, temp_uploads/ and cookies.txt. An explorer.exe
+# dropped there would run in our place. Planting it already requires code
+# execution under the same identity, so this is not a hole being closed, just
+# two lines of hardening.
 EXPLORER = os.path.join(os.environ.get('SystemRoot', r'C:\Windows'), 'explorer.exe')
 
 
 @app.errorhandler(413)
 def request_entity_too_large(e):
-    return jsonify({'error': 'Fichier trop volumineux (max 2 GB)'}), 413
+    return jsonify({'error': 'File too large (2 GB max)'}), 413
 
 
-# Le serveur ecoute sur la loopback, mais n'importe quelle page web ouverte sur
-# la machine peut l'atteindre. Verifier Host bloque le DNS rebinding (un domaine
-# attaquant repointe sur 127.0.0.1 deviendrait sinon same-origin et pourrait
-# lister, exfiltrer et supprimer les telechargements) ; verifier Origin bloque
-# les POST multipart et les GET a effet de bord declenches par une page tierce.
+# The server listens on loopback, but any web page open on the machine can
+# reach it. Checking Host blocks DNS rebinding (an attacker domain repointed at
+# 127.0.0.1 would otherwise become same-origin and could list, exfiltrate and
+# delete the downloads); checking Origin blocks multipart POSTs and the
+# side-effecting GETs a third-party page could fire.
 PORT = 5555
 ALLOWED_HOSTS = frozenset(f'{h}:{PORT}' for h in ('127.0.0.1', 'localhost'))
 ALLOWED_ORIGINS = frozenset(f'http://{h}' for h in ALLOWED_HOSTS)
 
 
-# 'none' est la navigation de premier niveau : c'est ce que la fenetre pywebview
-# envoie en ouvrant l'app. L'exclure fermerait l'application a elle-meme.
+# 'none' is a top-level navigation: it is what the pywebview window sends when
+# it opens the app. Excluding it would lock the application out of itself.
 ALLOWED_FETCH_SITES = frozenset(('same-origin', 'none'))
 
 
 @app.before_request
 def _reject_foreign_origin():
     if request.host not in ALLOWED_HOSTS:
-        return jsonify({'error': 'Hote non autorise'}), 403
+        return jsonify({'error': 'Host not allowed'}), 403
     origin = request.headers.get('Origin')
     if origin is not None:
         if origin not in ALLOWED_ORIGINS:
-            return jsonify({'error': 'Origine non autorisee'}), 403
+            return jsonify({'error': 'Origin not allowed'}), 403
         return None
-    # Sans Origin, on ne peut pas conclure : les navigateurs ne l'envoient pas
-    # sur un GET no-cors, donc un <video src="http://127.0.0.1:5555/stream/...">
-    # depuis une page tierce passait la garde et servait d'oracle sur les
-    # fichiers telecharges. Sec-Fetch-Site, lui, est toujours envoye.
+    # With no Origin there is nothing to conclude from: browsers omit it on a
+    # no-cors GET, so a <video src="http://127.0.0.1:5555/stream/..."> on a
+    # third-party page walked through the guard and served as an oracle on which
+    # files had been downloaded. Sec-Fetch-Site, on the other hand, is always
+    # sent.
     site = request.headers.get('Sec-Fetch-Site')
     if site is not None and site not in ALLOWED_FETCH_SITES:
-        return jsonify({'error': 'Origine non autorisee'}), 403
+        return jsonify({'error': 'Origin not allowed'}), 403
     return None
 
 
 @app.after_request
 def _security_headers(resp):
-    # frame-ancestors ferme le clickjacking : encadree dans une page tierce,
-    # l'app declenchait ses propres suppressions en same-origin sur deux clics.
+    # frame-ancestors closes clickjacking: framed inside a third-party page,
+    # the app fired its own deletions same-origin, two clicks in.
     resp.headers['X-Frame-Options'] = 'DENY'
     resp.headers['X-Content-Type-Options'] = 'nosniff'
     resp.headers.setdefault('Content-Security-Policy', '; '.join((
         "default-src 'self'",
-        "img-src 'self' https: data:",  # vignettes servies par les plateformes
+        "img-src 'self' https: data:",  # thumbnails served by the platforms
         "media-src 'self'",
         "frame-ancestors 'none'",
     )))
     return resp
 
 
-# Logging structuré
+# Structured logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -115,49 +116,48 @@ logging.basicConfig(
 )
 log = logging.getLogger('bigdl')
 
-# Suivi de progression des telechargements (download_id -> {queue, start_time})
+# Download progress registry (download_id -> {queue, start_time, deadline, cancelled})
 download_progress = {}
-# Suivi de progression des decoupes (cut_id -> {queue, deadline, cancelled, proc})
+# Cut progress registry (cut_id -> {queue, deadline, cancelled, proc})
 cut_progress = {}
 
 # Configuration
 MAX_VIDEO_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
-DOWNLOAD_TIMEOUT = 30 * 60  # 30 minutes max par téléchargement
+DOWNLOAD_TIMEOUT = 30 * 60  # 30 minutes per download
 MAX_DOWNLOADS_PER_MINUTE = 10
-CUT_TIMEOUT = 10 * 60  # 10 minutes max par decoupe
-SSE_GRACE = 60  # marge laissee au worker pour s'annuler avant que le SSE lache
-TIMEOUT_MSG = f'Timeout: telechargement trop long ({DOWNLOAD_TIMEOUT // 60} min max)'
-# Meme raison que TIMEOUT_MSG : le message part vers le client, il ne doit
-# pas exister en deux litteraux qui divergeront au premier reformulage.
-CANCEL_MSG = 'Telechargement annule'
-# Combien de videos /get-info enumere pour decrire une playlist. Il n'en
-# affiche aucune : le compte vient de playlist_count, que la page annonce sans
-# qu'on ait a derouler la liste. Ce plafond n'existe donc que comme repli si ce
-# champ manque — et il evite surtout de paginer une route synchrone jusqu'au
-# bout. Mesure : 1593 videos en 7,3 s sans borne, 1,0 s avec.
+CUT_TIMEOUT = 10 * 60  # 10 minutes per cut
+SSE_GRACE = 60  # slack for the worker to abort before the SSE stream gives up
+TIMEOUT_MSG = f'Timeout: download took too long ({DOWNLOAD_TIMEOUT // 60} min max)'
+# Same reason as TIMEOUT_MSG: the message travels to the client, so it must not
+# exist as two literals that drift apart the first time one is reworded.
+CANCEL_MSG = 'Download stopped'
+# How many videos /get-info enumerates to describe a playlist. It shows none of
+# them: the count comes from playlist_count, which the page states without
+# anyone having to page through the list. This cap exists only as a fallback
+# when that field is missing, and above all it keeps a synchronous route from
+# paging to the end. Measured: 1593 videos in 7.3 s unbounded, 1.0 s with it.
 PLAYLIST_SCAN = 50
 
 
-# La liste des etats terminaux : _put_final les publie, _sse_response s'arrete
-# dessus. Elle etait ecrite deux fois, et 'cancelled' n'avait ete ajoute qu'a
-# un seul des deux endroits.
+# The terminal states: _put_final publishes them and _sse_response stops on
+# them. This was written out twice, and 'cancelled' had been added to only one
+# of the two places.
 TERMINAL_STATUSES = ('complete', 'error', 'cancelled')
 
 
 class DownloadAborted(Exception):
-    """Le job doit s'arreter. `status` et `message` sont ce que _put_final publie.
+    """The job must stop. `status` and `message` are what _put_final publishes.
 
-    Une seule classe, et la raison portee en donnee plutot qu'en sous-type. Les
-    deux raisons actuelles -- echeance depassee, arret demande -- ne different
-    que par ces deux champs ; une hierarchie les distinguant imposait un except
-    par sous-type, plus un troisieme pose « au cas ou » qu'aucun raise ne
-    pouvait atteindre. Ici une future raison n'ajoute rien : elle passe un
-    status et un message.
+    One class, with the reason carried as data rather than as a subtype. The two
+    reasons that exist today, deadline exceeded and user-requested stop, differ
+    only in those two fields; a hierarchy separating them forced one except per
+    subtype, plus a third laid down "just in case" that no raise could reach.
+    Here a future reason adds nothing: it passes a status and a message.
 
-    Une seule classe est aussi ce que veulent les deux boucles qui la re-levent
-    (playlist, photos Instagram) : chacune est juste au-dessus d'un except
-    Exception qui avale et continue, et un tuple de sous-types incomplet les
-    ferait repartir en silence.
+    One class is also what the two loops that re-raise it want (playlist,
+    Instagram photos): each sits just above an except Exception that swallows
+    and continues, and an incomplete tuple of subtypes would send them off
+    again in silence.
     """
 
     def __init__(self, status, message):
@@ -177,20 +177,20 @@ elif (BASE_DIR / "ffmpeg.exe").exists():
 else:
     FFMPEG_PATH = "ffmpeg"
     FFPROBE_PATH = "ffprobe"
-    FFMPEG_DIR = None  # FFmpeg vient du PATH systeme
+    FFMPEG_DIR = None  # FFmpeg comes from the system PATH
 DOWNLOAD_FOLDER.mkdir(exist_ok=True)
 
 # Rate limiting
 _request_times = []
 _rate_lock = threading.Lock()
 
-# Dossiers par type de média
+# One folder per media type
 VIDEOS_FOLDER = DOWNLOAD_FOLDER / "Videos"
 MUSIC_FOLDER = DOWNLOAD_FOLDER / "Music"
 PHOTOS_FOLDER = DOWNLOAD_FOLDER / "Photos"
-# Espace de travail des telechargements : un sous-dossier par job, detruit a
-# la fin. Sur le meme volume que les dossiers de sortie pour que le
-# deplacement final de yt-dlp reste un renommage.
+# Scratch space for downloads: one subfolder per job, destroyed when it ends.
+# On the same volume as the output folders so that yt-dlp's final move stays a
+# rename rather than a copy.
 WORK_FOLDER = BASE_DIR / ".work"
 
 VIDEOS_FOLDER.mkdir(exist_ok=True)
@@ -199,7 +199,7 @@ PHOTOS_FOLDER.mkdir(exist_ok=True)
 WORK_FOLDER.mkdir(exist_ok=True)
 
 def _next_versioned_name(folder, stem, ext):
-    """Trouve le prochain nom disponible: stem_v2.ext, stem_v3.ext, etc."""
+    """Next free name: stem_v2.ext, stem_v3.ext, and so on."""
     version = 2
     while True:
         name = f"{stem}_v{version}{ext}"
@@ -209,13 +209,13 @@ def _next_versioned_name(folder, stem, ext):
 
 
 def sanitize_filename(filename):
-    """Nettoie le nom de fichier pour eviter les path traversal attacks.
+    """Scrub a filename so it cannot escape its folder.
 
-    Remplacer les separateurs suffit a empecher toute sortie du dossier : prive
-    de separateur, '..' ne designe plus un parent. On ne mutile donc plus les
-    points internes d'un nom legitime ('Wait... What.mp4'), qui ne correspondait
-    autrement plus au fichier ecrit par yt-dlp et renvoyait un 404 a la lecture,
-    a la suppression et a la localisation.
+    Replacing the separators is enough to prevent any escape: stripped of a
+    separator, '..' no longer names a parent. So the inner dots of a legitimate
+    name are left alone ('Wait... What.mp4'), which otherwise stopped matching
+    the file yt-dlp had written and returned 404 on playback, deletion and
+    reveal-in-explorer alike.
     """
     filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
     filename = filename.rstrip(' .')
@@ -228,7 +228,7 @@ def sanitize_filename(filename):
 
 
 def validate_youtube_url(url):
-    """Valide que l'URL est bien une URL YouTube valide"""
+    """True if the URL is a YouTube URL we know how to handle."""
     if not url:
         return False
 
@@ -247,22 +247,22 @@ def validate_youtube_url(url):
 
 
 def is_playlist_url(url):
-    """Vrai si l'URL designe une playlist entiere, pas une video qui en fait partie.
+    """True if the URL names a whole playlist, not one video seen from inside one.
 
-    'youtu.be/<id>?list=<pl>' et 'watch?v=<id>&list=<pl>' sont les liens de
-    partage d'UNE video vue depuis une playlist : les traiter comme des
-    playlists telechargeait tout l'album au lieu du morceau demande.
+    'youtu.be/<id>?list=<pl>' and 'watch?v=<id>&list=<pl>' are the share links
+    for ONE video viewed from a playlist: treating them as playlists downloaded
+    the entire album instead of the track that was asked for.
     """
     try:
         parsed = urlparse(url)
         params = parse_qs(parsed.query)
         if 'v' in params:
             return False
-        # youtu.be/<id> porte l'identifiant dans le chemin
+        # youtu.be/<id> carries the id in the path
         if parsed.netloc.endswith('youtu.be') and parsed.path.strip('/'):
             return False
-        # Egalite et non sous-chaine : '/@chaine/playlists' est la page des
-        # playlists d'une chaine, pas une playlist telechargeable.
+        # Equality and not a substring test: '/@channel/playlists' is a
+        # channel's playlist index, not a downloadable playlist.
         if parsed.path.rstrip('/') == '/playlist':
             return True
         return 'list' in params
@@ -271,7 +271,7 @@ def is_playlist_url(url):
 
 
 def clean_youtube_url(url):
-    """Nettoie l'URL YouTube pour garder seulement l'ID de la vidéo"""
+    """Reduce a YouTube URL to the video id it names."""
     try:
         if is_playlist_url(url):
             parsed = urlparse(url)
@@ -296,7 +296,7 @@ def clean_youtube_url(url):
 
 
 def detect_platform(url):
-    """Détecte la plateforme depuis l'URL"""
+    """Identify the platform from the URL."""
     domain = urlparse(url).netloc.lower()
 
     platforms = {
@@ -319,16 +319,17 @@ def detect_platform(url):
 
 
 def _get_format_string(download_type, quality=None):
-    """Retourne le format string yt-dlp selon le type de telechargement"""
+    """The yt-dlp format string for a given download type."""
     if download_type == 'mp3':
         return 'bestaudio/best'
     elif download_type == 'social':
-        # 'best' nu ignorait la qualite choisie : selectionner 480p
-        # telechargeait quand meme le flux le plus lourd disponible.
+        # A bare 'best' ignored the chosen quality: picking 480p still
+        # downloaded the heaviest stream on offer.
         if quality:
-            # Flux progressif uniquement : merge_output_format et le convertisseur
-            # MP4 ne sont poses que pour youtube/playlist, donc un bestvideo+
-            # bestaudio ici sortirait un .mkv/.webm illisible dans le player.
+            # Progressive streams only: merge_output_format and the MP4
+            # converter are set for youtube/playlist alone, so a
+            # bestvideo+bestaudio here would produce a .mkv/.webm the player
+            # cannot read.
             return f'best[height<={quality}]/best'
         return 'best'
     elif quality:
@@ -346,17 +347,17 @@ def _get_format_string(download_type, quality=None):
 
 
 def _get_output_folder(download_type):
-    """Retourne le dossier de sortie selon le type"""
+    """The output folder for a given download type."""
     return MUSIC_FOLDER if download_type == 'mp3' else VIDEOS_FOLDER
 
 
 def _get_output_template(download_type, url):
-    """Retourne le template de nom, *relatif*.
+    """The output name template, deliberately *relative*.
 
-    Relatif et non absolu : yt-dlp ignore silencieusement l'option 'paths'
-    quand outtmpl est un chemin absolu (verifie — avec un outtmpl absolu, le
-    dossier temporaire retombe sur le dossier final). Le dossier vient donc de
-    paths['home'], pose par _build_ydl_opts.
+    Relative and not absolute: yt-dlp silently ignores the 'paths' option when
+    outtmpl is an absolute path (measured, with an absolute outtmpl the temp
+    directory falls back to the final folder). The folder therefore comes from
+    paths['home'], set by _build_ydl_opts.
     """
     if download_type == 'social':
         return f'{detect_platform(url)}_%(id)s.%(ext)s'
@@ -364,7 +365,7 @@ def _get_output_template(download_type, url):
 
 
 def _make_progress_hook(q, current_video=None, total_videos=None):
-    """Cree un progress hook pour yt-dlp."""
+    """Build a yt-dlp progress hook."""
     def progress_hook(d):
         try:
             if d['status'] == 'downloading':
@@ -384,7 +385,7 @@ def _make_progress_hook(q, current_video=None, total_videos=None):
                     event['total_videos'] = total_videos
                 q.put_nowait(event)
             elif d['status'] == 'finished':
-                msg = 'Fusion/conversion en cours...'
+                msg = 'Merging and converting...'
                 if current_video is not None:
                     msg = f'Video {current_video}/{total_videos} - {msg}'
                 q.put_nowait({'status': 'processing', 'message': msg})
@@ -394,19 +395,19 @@ def _make_progress_hook(q, current_video=None, total_videos=None):
 
 
 def _make_abort_hook(entry):
-    """Garde d'arret, posee sur les deux familles de hooks.
+    """The stop guard, installed on both families of hooks.
 
-    Lever depuis un hook est la seule facon d'interrompre yt-dlp, qui tourne
-    dans le processus : aucun signal exterieur ne peut l'arreter, et Python ne
-    sait pas tuer un thread. Le controle vivait avant dans le generateur SSE,
-    ou il n'arretait que le rapport pendant que le thread continuait a
-    telecharger. Les hooks de progression sont muets pendant un merge ou une
-    extraction mp3, d'ou la pose sur les postprocessor_hooks aussi.
+    Raising from a hook is the only way to interrupt yt-dlp, which runs in this
+    process: no outside signal can stop it, and Python cannot kill a thread.
+    The check used to live in the SSE generator, where it stopped only the
+    reporting while the thread kept downloading. Progress hooks go silent
+    during a merge or an mp3 extraction, hence installing it on the
+    postprocessor hooks as well.
 
-    Deux raisons d'arreter, un seul mecanisme : l'echeance depassee et
-    l'annulation demandee. Les deux sont relues dans l'entree du registre a
-    chaque appel, donc la boucle playlist peut repousser l'echeance et la route
-    d'annulation lever le drapeau sans que le worker ait a etre notifie.
+    Two reasons to stop, one mechanism: the deadline passing and the user
+    asking. Both are re-read from the registry entry on every call, so the
+    playlist loop can push the deadline forward and the cancel route can raise
+    the flag without the worker needing to be notified.
     """
     def abort_hook(d):
         if entry.get('cancelled'):
@@ -417,28 +418,28 @@ def _make_abort_hook(entry):
 
 
 def _build_ydl_opts(download_type, url, quality, progress_hook, entry, job_tmp):
-    """Construit les options yt-dlp"""
+    """Assemble the yt-dlp options for one download."""
     abort = _make_abort_hook(entry)
     ydl_opts = {
         'format': _get_format_string(download_type, quality),
         'outtmpl': _get_output_template(download_type, url),
-        # Les fichiers intermediaires vont dans un dossier qui n'appartient
-        # qu'a ce job : plus besoin de suivre nos propres .part ni de deviner,
-        # a la garde d'age, lesquels appartiennent a un autre telechargement.
+        # Intermediate files go into a directory belonging to this job
+        # alone: no more tracking our own .part files, and no more guessing by
+        # age which ones belong to some other download.
         'paths': {'home': str(_get_output_folder(download_type)), 'temp': str(job_tmp)},
         'quiet': True,
         'no_warnings': True,
         'no_color': True,
-        # Toujours une seule video ici, y compris depuis _run_playlist_download,
-        # qui appelle cette fonction par video avec l'URL de chacune.
-        # Le type qui rend cette option porteuse est 'mp3' : start_download ne
-        # passe par clean_youtube_url (qui, lui, retire le '&list=') que pour
-        # 'youtube' et 'playlist'. Une URL de radio YouTube demandee en MP3
-        # arrive donc intacte, et sans cette ligne yt-dlp partait extraire la
-        # radio entiere, qui n'a pas de fin.
+        # Always a single video here, including when _run_playlist_download
+        # calls this function once per video with each one's own URL.
+        # The type that makes this option load-bearing is 'mp3': start_download
+        # only routes 'youtube' and 'playlist' through clean_youtube_url, which
+        # is what strips the '&list='. A YouTube radio URL asked for as MP3
+        # therefore arrives intact, and without this line yt-dlp set off to
+        # extract the entire radio, which has no end.
         'noplaylist': True,
-        # Une seule garde, posee sur les deux familles : c'est le propos du
-        # docstring de _make_abort_hook, autant que le code le montre.
+        # One guard, installed on both families: that is the point of
+        # _make_abort_hook's docstring, and the code should show it too.
         'progress_hooks': [abort, progress_hook],
         'postprocessor_hooks': [abort],
         'http_headers': {
@@ -448,9 +449,9 @@ def _build_ydl_opts(download_type, url, quality, progress_hook, entry, job_tmp):
         'retries': 10,
     }
 
-    # Pose des que la cascade sait ou est FFmpeg, pas seulement en frozen : en
-    # dev avec ffmpeg.exe a cote du projet, yt-dlp ne le trouvait pas et
-    # refusait toute fusion video+audio, donc toute la 4K.
+    # Set as soon as the cascade knows where FFmpeg is, not only when frozen:
+    # in dev, with ffmpeg.exe sitting beside the project, yt-dlp could not find
+    # it and refused every video+audio merge, which meant refusing all of 4K.
     if FFMPEG_DIR:
         ydl_opts['ffmpeg_location'] = str(FFMPEG_DIR)
 
@@ -474,7 +475,7 @@ def _build_ydl_opts(download_type, url, quality, progress_hook, entry, job_tmp):
 
 
 def _get_cookies_file():
-    """Retourne le chemin du fichier cookies s'il existe"""
+    """Path to the cookies file, if one is there."""
     base = BASE_DIR
     for name in ('cookies.txt', 'www.instagram.com_cookies.txt'):
         path = base / name
@@ -484,7 +485,7 @@ def _get_cookies_file():
 
 
 def _convert_to_jpg(filepath):
-    """Convertit une image (webp, png, etc.) en JPG"""
+    """Convert an image (webp, png, and so on) to JPG."""
     jpg_path = filepath.with_suffix('.jpg')
     try:
         img = Image.open(filepath)
@@ -499,7 +500,7 @@ def _convert_to_jpg(filepath):
 
 
 def _shortcode_to_media_id(shortcode):
-    """Convertit un shortcode Instagram en media_id numerique"""
+    """Turn an Instagram shortcode into its numeric media id."""
     alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
     media_id = 0
     for char in shortcode:
@@ -508,16 +509,16 @@ def _shortcode_to_media_id(shortcode):
 
 
 def _download_instagram_images(q, url, entry):
-    """Telecharge les images d'un post Instagram via l'API avec cookies"""
+    """Download an Instagram post's images through the private API, with cookies."""
     import http.cookiejar
 
-    _put_progress(q, {'status': 'processing', 'message': 'Telechargement image Instagram...'})
+    _put_progress(q, {'status': 'processing', 'message': 'Downloading Instagram image...'})
 
     cookies_file = _get_cookies_file()
     if not cookies_file:
         _put_final(q, {
             'status': 'error',
-            'message': 'Photos Instagram necessitent un fichier cookies.txt (exporte depuis ton navigateur avec l\'extension "Get cookies.txt LOCALLY")'
+            'message': 'Instagram photos need a cookies.txt file (export it from your browser with the "Get cookies.txt LOCALLY" extension)'
         })
         return
 
@@ -531,7 +532,7 @@ def _download_instagram_images(q, url, entry):
             break
 
     if not shortcode:
-        _put_final(q, {'status': 'error', 'message': 'URL Instagram invalide'})
+        _put_final(q, {'status': 'error', 'message': 'Invalid Instagram URL'})
         return
 
     media_id = _shortcode_to_media_id(shortcode)
@@ -550,17 +551,17 @@ def _download_instagram_images(q, url, entry):
     try:
         resp = session.get(api_url, timeout=15)
     except Exception as e:
-        _put_final(q, {'status': 'error', 'message': f'Erreur API Instagram: {e}'})
+        _put_final(q, {'status': 'error', 'message': f'Instagram API error: {e}'})
         return
 
     if resp.status_code != 200:
-        _put_final(q, {'status': 'error', 'message': f'API Instagram erreur {resp.status_code}. Cookies peut-etre expires.'})
+        _put_final(q, {'status': 'error', 'message': f'Instagram API returned {resp.status_code}. The cookies may have expired.'})
         return
 
     data = resp.json()
     items = data.get('items', [])
     if not items:
-        _put_final(q, {'status': 'error', 'message': 'Post Instagram vide ou inaccessible'})
+        _put_final(q, {'status': 'error', 'message': 'Instagram post is empty or unreachable'})
         return
 
     item = items[0]
@@ -577,25 +578,26 @@ def _download_instagram_images(q, url, entry):
         if candidates:
             image_urls.append(candidates[0]['url'])
 
-    # Un post video porte aussi image_versions2 (sa vignette) : sans ce test,
-    # on enregistrait l'image de couverture en annoncant un telechargement
-    # complet a quelqu'un qui avait demande une video.
+    # A video post carries image_versions2 too, holding its thumbnail: without
+    # this check we saved the cover image and reported a completed download to
+    # someone who had asked for a video.
     if item.get('video_versions') or any(m.get('video_versions') for m in (item.get('carousel_media') or [])):
         _put_final(q, {'status': 'error',
-                       'message': 'Ce post contient une video : choisis le format video.'})
+                       'message': 'This post contains a video: pick the video format.'})
         return
 
     if not image_urls:
-        _put_final(q, {'status': 'error', 'message': 'Aucune image trouvee dans le post'})
+        _put_final(q, {'status': 'error', 'message': 'No image found in that post'})
         return
 
     downloaded = 0
     total = len(image_urls)
 
     for i, img_url in enumerate(image_urls, 1):
-        # En tete de boucle et hors du try. En fin de corps, le `continue` du
-        # chemin « conversion ratee » la sautait entierement, et une image de
-        # plus, c'est jusqu'a 30 s d'attente avant que l'arret soit vu.
+        # At the top of the loop and outside the try. At the end of the body,
+        # the `continue` taken when a conversion fails skipped this check
+        # entirely, and one more image means up to 30 s of waiting before the
+        # stop is noticed.
         if entry.get('cancelled'):
             raise DownloadAborted('cancelled', CANCEL_MSG)
         try:
@@ -606,12 +608,13 @@ def _download_instagram_images(q, url, entry):
             temp_filepath = PHOTOS_FOLDER / sanitize_filename(temp_filename)
             temp_filepath.write_bytes(img_resp.content)
             converted = _convert_to_jpg(temp_filepath)
-            # On juge sur le fichier, pas sur le chemin rendu : _convert_to_jpg
-            # rend aussi le chemin d origine quand la sauvegarde a reussi mais
-            # que la suppression du .tmp a echoue (antivirus, indexeur). Le
-            # .tmp etant filtre de la liste, compter un echec reel annoncait un
-            # succes invisible, et compter un succes reel comme un echec
-            # annoncait une erreur alors que le JPG est bien la.
+            # Judge on the file, not on the path returned: _convert_to_jpg
+            # also returns the original path when the save succeeded but
+            # deleting the .tmp did not (antivirus, indexer). Since .tmp files
+            # are filtered out of the listing, counting a real failure
+            # announced an invisible success, and counting a real success as a
+            # failure announced an error while the JPG was sitting right
+            # there.
             if not converted.with_suffix('.jpg').exists():
                 temp_filepath.unlink(missing_ok=True)
                 continue
@@ -623,11 +626,11 @@ def _download_instagram_images(q, url, entry):
                 'eta': '',
             })
         except DownloadAborted:
-            # Filet, et non le chemin nominal : la verification est en tete de
-            # boucle, hors du try. Il reste parce que le except Exception juste
-            # dessous avale tout, y compris un arret qu'un helper appele ici
-            # viendrait a lever -- c'est exactement comme ca que l'annulation
-            # etait devenue inerte, le job publiant « complete » quand meme.
+            # A net, not the nominal path: the check is at the top of the
+            # loop, outside the try. It stays because the except Exception just
+            # below swallows everything, including a stop that a helper called
+            # from here might raise. That is exactly how cancellation went
+            # inert once, with the job publishing 'complete' regardless.
             raise
         except Exception:
             pass
@@ -642,11 +645,11 @@ def _download_instagram_images(q, url, entry):
             'filename': f'instagram_{shortcode}_1.jpg' if total > 1 else f'instagram_{shortcode}.jpg',
         })
     else:
-        _put_final(q, {'status': 'error', 'message': 'Echec telechargement. Cookies expires ou acces refuse.'})
+        _put_final(q, {'status': 'error', 'message': 'Download failed. Cookies expired, or access denied.'})
 
 
 def _kill_quietly(proc):
-    """Tue un process sans bruit : il a pu se terminer entre-temps."""
+    """Kill a process quietly: it may have finished on its own meanwhile."""
     if not proc:
         return
     try:
@@ -656,10 +659,10 @@ def _kill_quietly(proc):
 
 
 def _put_progress(q, event):
-    """Publie un evenement de progression, en le jetant si la file est pleine.
+    """Publish a progress event, dropping it if the queue is full.
 
-    Un put nu remontait dans le gestionnaire generique et avortait toute la
-    playlist avec un message vide (str(queue.Full()) est '').
+    A bare put propagated into the generic handler and aborted the whole
+    playlist with an empty message, since str(queue.Full()) is ''.
     """
     try:
         q.put_nowait(event)
@@ -668,11 +671,11 @@ def _put_progress(q, event):
 
 
 def _put_final(q, event):
-    """Publie un evenement terminal, meme si la file est pleine.
+    """Publish a terminal event, even when the queue is full.
 
-    put_nowait leve queue.Full quand le client ne draine pas ; l'exception
-    remontait dans le gestionnaire d'erreur generique et, pour Instagram,
-    declenchait a tort le repli photo.
+    put_nowait raises queue.Full when the client is not draining; the exception
+    propagated into the generic error handler and, for Instagram, wrongly
+    triggered the photo fallback.
     """
     try:
         q.put_nowait(event)
@@ -680,25 +683,25 @@ def _put_final(q, event):
     except queue.Full:
         pass
     try:
-        q.get_nowait()  # un seul producteur : liberer une place suffit
+        q.get_nowait()  # single producer: freeing one slot is enough
     except queue.Empty:
         pass
     try:
         q.put_nowait(event)
     except queue.Full:
-        log.warning('Evenement terminal non transmis (file saturee)')
+        log.warning('Terminal event not delivered (queue saturated)')
 
 
 def _sweep_old_files(folder, max_age):
-    """Supprime les entrees d'un dossier plus vieilles que max_age.
+    """Delete entries in a folder older than max_age.
 
-    Fichiers et dossiers : les threads de telechargement sont daemon, donc
-    fermer la fenetre pendant un telechargement tue le worker sans executer
-    son finally, et laisse son dossier de travail derriere lui.
+    Files and directories alike: download threads are daemons, so closing the
+    window mid-download kills the worker without running its finally and leaves
+    its work directory behind.
 
-    La garde d'age est le point subtil : les dossiers sont partages, et un
-    balayage inconditionnel effacait le .part d'un telechargement encore en
-    cours, le faisant echouer.
+    The age guard is the subtle part: these folders are shared, and an
+    unconditional sweep erased the .part of a download still in flight, making
+    it fail.
     """
     cutoff = time.time() - max_age
     for f in folder.glob('*'):
@@ -715,55 +718,56 @@ def _sweep_old_files(folder, max_age):
 
 
 def _check_filesize(file_path):
-    """Vérifie la taille d'un fichier téléchargé, supprime s'il dépasse la limite"""
+    """Check a downloaded file's size, deleting it if it exceeds the limit."""
     if file_path.exists():
         size = file_path.stat().st_size
         if size > MAX_VIDEO_SIZE:
             file_path.unlink()
             size_gb = size / (1024**3)
             max_gb = MAX_VIDEO_SIZE / (1024**3)
-            raise Exception(f'Fichier trop volumineux ({size_gb:.1f} GB). Maximum: {max_gb:.0f} GB')
+            raise Exception(f'File too large ({size_gb:.1f} GB). Maximum: {max_gb:.0f} GB')
 
 
 def _explain_error(msg):
-    """Ajoute la cause probable a un 403, qui ne la donne jamais.
+    """Attach the likely cause to a 403, which never states one.
 
-    L'exe embarque une version figee de yt-dlp et ne peut pas la mettre a
-    jour : quand une plateforme durcit ses protections, tout echoue en 403
-    sans que rien n'indique qu'il faut une version plus recente.
+    The exe bundles a frozen yt-dlp and cannot update it: when a platform
+    tightens its protections, everything fails with a 403 and nothing hints
+    that a newer version is what is needed.
     """
     if 'HTTP Error 403' not in msg:
         return msg
-    # Le conseil differe selon le public : l'exe embarque yt-dlp et ne peut pas
-    # le mettre a jour, le mode dev le peut. Court, parce que le bandeau fait
-    # 268 px de large et disparait au bout de six secondes.
+    # The advice differs by audience: the exe bundles yt-dlp and cannot update
+    # it, while dev mode can. Kept short, because the banner is 268 px wide and
+    # disappears after six seconds.
     if getattr(sys, 'frozen', False):
-        return msg + ' - yt-dlp est peut-etre trop ancien : installe la derniere version de BIG DL.'
-    return msg + ' - yt-dlp est peut-etre trop ancien : pip install --upgrade yt-dlp.'
+        return msg + ' - yt-dlp may be too old: install the latest BIG DL.'
+    return msg + ' - yt-dlp may be too old: pip install --upgrade yt-dlp.'
 
 
 def _run_download(download_id, url, download_type, quality=None):
-    """Execute le telechargement dans un thread avec progress hooks"""
+    """Run the download on a worker thread, reporting through progress hooks."""
     entry = download_progress.get(download_id)
     if not entry:
         return
     q = entry['queue']
 
-    # Espace de travail prive, sur le meme volume que les dossiers de sortie
-    # pour que le deplacement final reste un renommage.
+    # Private scratch space, on the same volume as the output folders so the
+    # final move stays a rename.
     job_tmp = WORK_FOLDER / download_id
 
     try:
         if download_type != 'photo':
-            # Les photos vont droit dans PHOTOS_FOLDER et ne voient jamais ce
-            # dossier : le creer serait deux operations disque pour rien.
+            # Photos go straight into PHOTOS_FOLDER and never see this
+            # directory: creating it would be two disk operations for nothing.
             job_tmp.mkdir(parents=True, exist_ok=True)
 
         if download_type == 'photo':
-            # Choisie en amont plutot que deduite d'un echec : le repli sur
-            # exception se declenchait aussi sur un cookie expire, un timeout
-            # ou une coupure reseau pendant une *video* Instagram, et rendait
-            # alors un message decrivant une operation jamais demandee.
+            # Chosen upfront rather than inferred from a failure: the
+            # exception-based fallback also fired on an expired cookie, a
+            # timeout or a dropped connection during an Instagram *video*, and
+            # then returned a message describing an operation nobody asked
+            # for.
             _download_instagram_images(q, url, entry)
         elif download_type == 'playlist':
             _run_playlist_download(q, url, quality, entry, job_tmp)
@@ -775,7 +779,7 @@ def _run_download(download_id, url, download_type, quality=None):
                 info = ydl.extract_info(url, download=True)
 
                 if info is None:
-                    _put_final(q, {'status': 'error', 'message': "Impossible d'extraire les informations"})
+                    _put_final(q, {'status': 'error', 'message': "Could not extract the information"})
                     return
 
                 title = info.get('title', 'media')
@@ -814,54 +818,54 @@ def _run_download(download_id, url, download_type, quality=None):
                 _put_final(q, result)
 
     except DownloadAborted as e:
-        # Un seul except, parce que l'exception porte deja ce qu'il y a a
-        # publier. C'etaient trois branches, dont une qu'aucun raise du fichier
-        # ne pouvait atteindre.
+        # One except, because the exception already carries what to publish.
+        # This was three branches, one of which no raise in the file could
+        # reach.
         log.warning(f"Download aborted [{e.status}] {url}: {e.message}")
         _put_final(q, {'status': e.status, 'message': e.message})
     except Exception as e:
         error_msg = _explain_error(str(e))
         log.error(f"Download failed [{download_type}] {url}: {error_msg}")
-        # Plus de repli automatique sur les images. Pour un post video,
-        # l'API Instagram renvoie quand meme la vignette : le repli
-        # 'reussissait' alors en livrant un JPG de couverture annonce comme un
-        # telechargement complet. Les photos ont desormais leur propre type.
+        # No more automatic fallback to images. For a video post the
+        # Instagram API returns the thumbnail anyway, so the fallback
+        # "succeeded" by handing over a cover JPG announced as a completed
+        # download. Photos have their own download type now.
         _put_final(q, {'status': 'error', 'message': error_msg})
     finally:
-        # Un seul geste, et il couvre l'echec comme le succes : le dossier
-        # n'appartient qu'a ce job, donc rien d'autre ne peut s'y trouver.
+        # One gesture, covering failure as well as success: the directory
+        # belongs to this job alone, so nothing else can be inside it.
         shutil.rmtree(job_tmp, ignore_errors=True)
 
 
 def _flat_ydl_opts():
-    """Options des extractions plates : celles qui enumerent une playlist.
+    """Options for the flat extractions: the ones that enumerate a playlist.
 
-    Le meme dict etait ecrit deux fois, a 250 lignes d'ecart. Toute option
-    ajoutee ensuite — un delai, des cookies, des retries — n'aurait atterri que
-    sur une des deux, et la divergence ne se serait vue qu'a l'usage.
+    The same dict was written out twice, 250 lines apart. Any option added
+    later, a timeout or cookies or retries, would have landed on only one of
+    them, and the divergence would have shown up only in use.
 
-    Une fonction et non une constante de module : un dict partage finit mute.
+    A function and not a module constant: a shared dict ends up mutated.
 
-    Contrairement a ce que ce commentaire a d'abord affirme, y glisser
-    'noplaylist' ne casserait rien : verifie dans le source de yt-dlp 2026.08.19,
-    _yes_playlist() commence par `if not playlist_id or not video_id: return
-    not video_id` et sort donc avant meme de lire l'option. Les deux appelants
-    ne voient que des URL sans `v` — is_playlist_url() l'exige, et
-    clean_youtube_url() reecrit en `playlist?list=`. L'option n'a simplement
-    rien a faire ici.
+    Contrary to what this comment first claimed, slipping 'noplaylist' in here
+    would break nothing: checked against the yt-dlp 2026.08.19 source,
+    _yes_playlist() opens with `if not playlist_id or not video_id: return not
+    video_id` and so returns before it ever reads the option. Both callers only
+    ever see URLs with no `v` (is_playlist_url() requires that, and
+    clean_youtube_url() rewrites to `playlist?list=`). The option simply has no
+    business here.
     """
     return {'quiet': True, 'no_warnings': True, 'extract_flat': True}
 
 
 def _run_playlist_download(q, url, quality, entry, job_tmp):
-    """Telecharge une playlist video par video avec suivi"""
-    # D'abord recuperer la liste des videos
+    """Download a playlist one video at a time, reporting as it goes."""
+    # Get the list of videos first
     flat_opts = _flat_ydl_opts()
     with yt_dlp.YoutubeDL(flat_opts) as ydl:
         playlist_info = ydl.extract_info(url, download=False)
 
     if not playlist_info:
-        _put_final(q, {'status': 'error', 'message': "Impossible de lire la playlist"})
+        _put_final(q, {'status': 'error', 'message': "Could not read the playlist"})
         return
 
     entries = [e for e in playlist_info.get('entries', []) if e]
@@ -869,7 +873,7 @@ def _run_playlist_download(q, url, quality, entry, job_tmp):
     playlist_title = playlist_info.get('title', 'Playlist')
 
     if total == 0:
-        _put_final(q, {'status': 'error', 'message': "Playlist vide"})
+        _put_final(q, {'status': 'error', 'message': "Playlist is empty"})
         return
 
     _put_progress(q, {
@@ -878,9 +882,9 @@ def _run_playlist_download(q, url, quality, entry, job_tmp):
         'total_videos': total,
     })
 
-    # 'item' et pas 'entry' : le nom masquait le parametre portant l'entree du
-    # registre, donc l'echeance etait ecrite dans le dict de la video yt-dlp et
-    # le filet SSE continuait de lire une valeur jamais repoussee.
+    # 'item' and not 'entry': that name shadowed the parameter holding the
+    # registry entry, so the deadline was written into yt-dlp's video dict while
+    # the SSE net kept reading a value that was never pushed forward.
     for i, item in enumerate(entries, 1):
         video_url = item.get('url') or item.get('id')
         if not video_url:
@@ -896,10 +900,10 @@ def _run_playlist_download(q, url, quality, entry, job_tmp):
             'video_title': item.get('title', f'Video {i}'),
         })
 
-        # Echeance repoussee a chaque video : un budget global de 30 min
-        # abandonnerait une playlist longue en cours de route, ce qui est un
-        # usage legitime. Le filet SSE lit la meme valeur, donc les deux
-        # couches ne peuvent plus se contredire.
+        # The deadline is pushed forward per video: a global 30 min budget
+        # would abandon a long playlist partway through, which is a legitimate
+        # use. The SSE net reads the same value, so the two layers can no
+        # longer contradict each other.
         entry['deadline'] = time.time() + DOWNLOAD_TIMEOUT
         hook = _make_progress_hook(q, current_video=i, total_videos=total)
         ydl_opts = _build_ydl_opts('youtube', video_url, quality, hook, entry, job_tmp)
@@ -908,7 +912,7 @@ def _run_playlist_download(q, url, quality, entry, job_tmp):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.extract_info(video_url, download=True)
         except DownloadAborted:
-            raise  # sinon la boucle continuerait video par video
+            raise  # otherwise the loop would carry on, video by video
         except Exception as e:
             _put_progress(q, {
                 'status': 'playlist_video_error',
@@ -927,7 +931,7 @@ def _run_playlist_download(q, url, quality, entry, job_tmp):
 
 
 def _rate_limit_check():
-    """Vérifie le rate limiting. Retourne True si la requête est autorisée."""
+    """Rate limiting. True when the request is allowed through."""
     now = time.time()
     with _rate_lock:
         _request_times[:] = [t for t in _request_times if now - t < 60]
@@ -939,10 +943,10 @@ def _rate_limit_check():
 
 @app.route('/start-download', methods=['POST'])
 def start_download():
-    """Lance un telechargement avec suivi de progression"""
+    """Start a download and hand back the id its progress stream will use."""
     try:
         if not _rate_limit_check():
-            return jsonify({'error': 'Trop de requetes. Attendez un moment.'}), 429
+            return jsonify({'error': 'Too many requests. Give it a moment.'}), 429
 
         data = request.get_json()
         url = data.get('url')
@@ -950,20 +954,20 @@ def start_download():
         quality = data.get('quality')
 
         if not url:
-            return jsonify({'error': 'URL manquante'}), 400
+            return jsonify({'error': 'Missing URL'}), 400
 
         if download_type in ('youtube', 'playlist'):
             if not validate_youtube_url(url):
-                return jsonify({'error': 'URL YouTube invalide'}), 400
+                return jsonify({'error': 'Invalid YouTube URL'}), 400
             url = clean_youtube_url(url)
 
         if download_type == 'social':
             plat = detect_platform(url)
             if plat not in ('instagram', 'tiktok', 'x', 'facebook'):
-                return jsonify({'error': f'Plateforme {plat} non supportee'}), 400
+                return jsonify({'error': f'{plat} is not a supported platform'}), 400
 
         if download_type == 'photo' and detect_platform(url) != 'instagram':
-            return jsonify({'error': 'Les photos ne sont supportees que sur Instagram'}), 400
+            return jsonify({'error': 'Photos are only supported on Instagram'}), 400
 
         download_id = str(uuid.uuid4())
         q = queue.Queue(maxsize=100)
@@ -971,8 +975,8 @@ def start_download():
         download_progress[download_id] = {
             'queue': q,
             'start_time': now,
-            # Repoussee video par video par la boucle playlist ; lue par les
-            # hooks (qui annulent) et par le filet SSE (qui libere le client).
+            # Pushed forward per video by the playlist loop; read by the
+            # hooks, which abort, and by the SSE net, which frees the client.
             'deadline': now + DOWNLOAD_TIMEOUT,
             'cancelled': False,
         }
@@ -992,11 +996,11 @@ def start_download():
 
 
 def _sse_response(registry, key, unknown_msg, poll, deadline_key=None):
-    """Draine la queue d'un job et la sert en Server-Sent Events.
+    """Drain a job's queue and serve it as Server-Sent Events.
 
-    Les deux flux (download, decoupe) etaient deux copies : le correctif de
-    fuite a du etre ecrit deux fois, et les copies avaient deja diverge - seul
-    le download avait recu un filet cote client.
+    The two streams, download and cut, were two copies: the leak fix had to be
+    written twice, and the copies had already drifted apart, with only the
+    download having been given a client-side net.
     """
     def generate():
         entry = registry.get(key)
@@ -1006,9 +1010,9 @@ def _sse_response(registry, key, unknown_msg, poll, deadline_key=None):
         q = entry['queue']
         try:
             while True:
-                # Filet de securite. Le worker s'annule desormais lui-meme (hook
-                # yt-dlp ou watchdog FFmpeg) ; on lui laisse SSE_GRACE d'avance,
-                # puis on libere le client plutot que de le laisser attendre.
+                # A safety net. The worker now aborts itself, through the
+                # yt-dlp hook or the FFmpeg watchdog; give it SSE_GRACE of head
+                # start, then free the client rather than leave it waiting.
                 if deadline_key and time.time() > entry[deadline_key] + SSE_GRACE:
                     yield f'data: {json.dumps({"status": "error", "message": TIMEOUT_MSG})}\n\n'
                     break
@@ -1020,8 +1024,8 @@ def _sse_response(registry, key, unknown_msg, poll, deadline_key=None):
                 except queue.Empty:
                     yield f'data: {json.dumps({"status": "heartbeat"})}\n\n'
         finally:
-            # finally, sinon une deconnexion client (GeneratorExit) laissait
-            # l'entree et sa queue en memoire definitivement.
+            # In a finally, otherwise a client disconnect (GeneratorExit)
+            # left the entry and its queue in memory for good.
             registry.pop(key, None)
 
     return Response(
@@ -1033,26 +1037,26 @@ def _sse_response(registry, key, unknown_msg, poll, deadline_key=None):
 
 @app.route('/progress/<download_id>')
 def progress_stream(download_id):
-    """Endpoint SSE pour le suivi de progression"""
+    """SSE endpoint carrying a download's progress."""
     return _sse_response(download_progress, download_id,
-                         'Telechargement inconnu', poll=10, deadline_key='deadline')
+                         'Unknown download', poll=10, deadline_key='deadline')
 
 
 @app.route('/cancel/<job_id>', methods=['POST'])
 def cancel_job(job_id):
-    """Arrete un telechargement ou une decoupe en cours.
+    """Stop a download or a cut in progress.
 
-    Repond tout de suite, sans attendre que le worker accuse reception : le
-    client doit pouvoir relancer immediatement. Un telechargement s'arrete au
-    prochain hook yt-dlp — quasi instantanement en pratique, mais si yt-dlp est
-    bloque la ou aucun hook ne passe, le thread survit jusqu'a la fermeture de
-    l'application. Python ne sait pas tuer un thread ; c'est pour cela que
-    l'interface se libere sans lui.
+    Answers immediately, without waiting for the worker to acknowledge: the
+    client has to be able to start again right away. A download stops at the
+    next yt-dlp hook, which is near instant in practice, but if yt-dlp is stuck
+    somewhere no hook runs, the thread survives until the application closes.
+    Python cannot kill a thread; that is why the interface frees itself without
+    waiting for it.
     """
     entry = download_progress.get(job_id) or cut_progress.get(job_id)
     if not entry:
-        # Deja termine, ou jamais existe : dans les deux cas il n'y a plus rien
-        # a arreter, et l'appelant veut juste reprendre la main.
+        # Already finished, or never existed: either way there is nothing
+        # left to stop, and the caller just wants control back.
         return jsonify({'success': True})
 
     entry['cancelled'] = True
@@ -1062,16 +1066,16 @@ def cancel_job(job_id):
 
 @app.route('/')
 def index():
-    """Page principale"""
+    """The single page."""
     return render_template('index.html')
 
 
 # ==================== PLAYLISTS ====================
 def _instagram_photo_stub():
-    """Reponse /get-info pour un post Instagram dont l'extraction echoue.
+    """The /get-info reply for an Instagram post whose extraction fails.
 
-    Le meme dict de 15 cles etait ecrit deux fois dans la meme fonction, sur
-    la branche exception et sur la branche 'info is None'.
+    The same 15-key dict was written twice inside one function, on the
+    exception branch and on the 'info is None' branch.
     """
     return {
         'success': True,
@@ -1093,20 +1097,20 @@ def _instagram_photo_stub():
 
 
 def _playlist_info(url):
-    """Metadonnees d'une playlist, en extraction plate.
+    """A playlist's metadata, from a flat extraction.
 
-    Interne et non plus une route : le client choisissait l'endpoint sur sa
-    propre detection d'URL, qui pouvait contredire celle du serveur — la
-    requete partait alors au mauvais extracteur et l'echec etait opaque.
-    C'est desormais /get-info qui tranche, avec is_playlist_url().
+    Internal rather than a route of its own: the client used to pick the
+    endpoint from its own URL detection, which could contradict the server's.
+    The request then went to the wrong extractor and the failure was opaque.
+    /get-info now decides, with is_playlist_url().
     """
-    # La borne est posee ici et nulle part ailleurs : le telechargement, lui,
-    # a besoin de la liste entiere.
+    # The bound is set here and nowhere else: the download itself needs the
+    # whole list.
     with yt_dlp.YoutubeDL({**_flat_ydl_opts(), 'playlistend': PLAYLIST_SCAN}) as ydl:
         info = ydl.extract_info(url, download=False)
 
     if info is None:
-        raise ValueError("Impossible d'extraire les informations de la playlist")
+        raise ValueError("Could not extract the playlist information")
 
     enumerees = len([e for e in info.get('entries', []) if e])
 
@@ -1116,11 +1120,12 @@ def _playlist_info(url):
         'platform': 'youtube',
         'title': info.get('title', 'Playlist'),
         'uploader': info.get('uploader', 'Inconnu'),
-        # playlist_count vient de la page et ne depend pas de la borne : une
-        # playlist de 1593 videos s'annonce 1593 meme si on n'en a enumere que
-        # PLAYLIST_SCAN. La longueur ne sert que de repli quand le champ manque
-        # -- et ce repli, lui, EST plafonne par la borne, d'ou le drapeau :
-        # annoncer « 50 » pour une playlist de 3000 serait un mensonge muet.
+        # playlist_count comes from the page and does not depend on the
+        # bound: a playlist of 1593 videos still announces 1593 even though only
+        # PLAYLIST_SCAN of them were enumerated. The length is only a fallback
+        # for when that field is missing, and that fallback IS capped by the
+        # bound, hence the flag: announcing "50" for a playlist of 3000 would be
+        # a silent lie.
         'video_count': info.get('playlist_count') or enumerees,
         'video_count_partial': not info.get('playlist_count') and enumerees >= PLAYLIST_SCAN,
     }
@@ -1129,19 +1134,18 @@ def _playlist_info(url):
 # ==================== COMMUN ====================
 @app.route('/get-info', methods=['POST'])
 def get_video_info():
-    """Récupère les informations d'une vidéo"""
+    """Metadata for one URL, plus the formats it can be downloaded in."""
     try:
         data = request.get_json()
         url = data.get('url')
 
         if not url:
-            return jsonify({'error': 'URL manquante'}), 400
+            return jsonify({'error': 'Missing URL'}), 400
 
-        # Le serveur est seul juge de ce qu'est une playlist : c'est lui qui
-        # possede la semantique des URL.
-        # Restreint a YouTube : _run_playlist_download ne sait telecharger que
-        # ca, et _playlist_info etiquetait 'youtube' n'importe quelle URL
-        # portant ?list=, qui se faisait ensuite rejeter en 400.
+        # The server alone decides what counts as a playlist: URL semantics
+        # belong to it. Restricted to YouTube because _run_playlist_download can
+        # only download that, and _playlist_info used to label as 'youtube' any
+        # URL carrying ?list=, which start_download then rejected with a 400.
         platform = detect_platform(url)
         if platform == 'youtube' and is_playlist_url(url):
             return jsonify(_playlist_info(url))
@@ -1149,13 +1153,13 @@ def get_video_info():
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
-            # is_playlist_url() a deja tranche que cette URL designe UNE video,
-            # mais rien ne le disait a yt-dlp : par defaut il voit le 'list=' et
-            # deroule la playlist. Sur une radio YouTube ('list=RD...'), generee
-            # a la volee, il pagine sans fin -- mesure : plus de 120 s sans
-            # repondre, contre 1,1 s avec cette option. Et le blocage tombait
-            # sur /get-info, la ou le bouton « Arreter » n'est pas encore
-            # affiche : l'interface restait figee sur « ... ».
+            # is_playlist_url() has already ruled that this URL names ONE
+            # video, but nothing told yt-dlp: by default it sees the 'list=' and
+            # unrolls the playlist. On a YouTube radio ('list=RD...'), generated
+            # on demand, it pages forever. Measured: over 120 s without an
+            # answer, against 1.1 s with this option. And the freeze landed on
+            # /get-info, where the Stop button is not on screen yet, so the
+            # interface just sat on "...".
             'noplaylist': True,
         }
 
@@ -1174,14 +1178,14 @@ def get_video_info():
         if info is None:
             if platform == 'instagram':
                 return jsonify(_instagram_photo_stub())
-            raise Exception("Impossible d'extraire les informations")
+            raise Exception("Could not extract the information")
 
-        # Récupérer la résolution disponible
+        # Pull out the resolution on offer
         height = info.get('height', 0)
         width = info.get('width', 0)
         fps = info.get('fps', 0)
 
-        # Déterminer la qualité
+        # Work out the quality label
         if height >= 2160:
             quality = "4K (2160p)"
         elif height >= 1440:
@@ -1195,11 +1199,11 @@ def get_video_info():
         else:
             quality = f"{height}p" if height > 0 else "Inconnue"
 
-        # Extraire les qualites disponibles
+        # Collect the available qualities
         formats = info.get('formats', [])
-        # Un post photo Instagram n'echoue pas toujours a l'extraction : quand
-        # elle passe, il ne restait aucun bouton Photo puisque _is_photo n'est
-        # pose que sur la branche exception.
+        # An Instagram photo post does not always fail extraction: when it
+        # succeeds, no Photo button was left, since _is_photo is only set on the
+        # exception branch.
         has_video_stream = any(
             f.get('vcodec', 'none') != 'none' for f in formats)
         is_photo = platform == 'instagram' and not has_video_stream
@@ -1214,18 +1218,18 @@ def get_video_info():
             f.get('acodec', 'none') != 'none'
             for f in formats
         ) if formats else True
-        # Une image n'a pas de piste audio. Le repli ci-dessus (« aucun format
-        # extrait, donc on suppose de l'audio ») est pose par la branche meme
-        # qui rend is_photo vrai : le client affichait alors un bouton MP3 sur
-        # un post photo, et comme il est ajoute apres le bouton Photo, c'est
-        # lui qui finissait selectionne. Un clic sur « Telecharger » lancait un
-        # MP3 voue a l'echec sur une image.
+        # An image has no audio track. The fallback above, "no formats
+        # extracted, so assume there is audio", is set by the very branch that
+        # makes is_photo true: the client then drew an MP3 button on a photo
+        # post and, being added after the Photo button, that is the one that
+        # ended up selected. Clicking Download started an mp3 that could only
+        # fail on an image.
         if is_photo:
             has_audio = False
 
-        # Seul YouTube est supporte en playlist par _run_playlist_download :
-        # annoncer is_playlist pour un set SoundCloud affichait une carte dont
-        # le seul bouton se faisait rejeter en 400 par start_download.
+        # _run_playlist_download only supports YouTube playlists: announcing
+        # is_playlist for a SoundCloud set drew a card whose only button was
+        # then rejected with a 400 by start_download.
         is_playlist = info.get('_type') == 'playlist' and platform == 'youtube'
 
         return jsonify({
@@ -1248,11 +1252,11 @@ def get_video_info():
 
     except Exception as e:
         log.error(f"Get-info error: {e}")
-        return jsonify({'error': f'Erreur: {str(e)}'}), 500
+        return jsonify({'error': f'Error: {str(e)}'}), 500
 
 
 def _resolve_category_folder(category):
-    """Resout le dossier a partir du nom de categorie (nouveau ou legacy)"""
+    """Resolve a category name, new or legacy, to a folder on disk."""
     folder_map = {
         'Videos': VIDEOS_FOLDER,
         'Music': MUSIC_FOLDER,
@@ -1267,33 +1271,33 @@ def _resolve_category_folder(category):
 
 @app.route('/delete/<category>/<filename>', methods=['DELETE'])
 def delete_file(category, filename):
-    """Supprime un fichier telecharge"""
+    """Delete a downloaded file."""
     safe_filename = sanitize_filename(filename)
     folder = _resolve_category_folder(category)
     if not folder:
-        return jsonify({'error': 'Categorie invalide'}), 400
+        return jsonify({'error': 'Invalid category'}), 400
 
     file_path = (folder / safe_filename).resolve()
     folder_path = folder.resolve()
 
     if not str(file_path).startswith(str(folder_path)):
-        return jsonify({'error': 'Acces refuse'}), 403
+        return jsonify({'error': 'Access denied'}), 403
 
     if not file_path.exists():
-        return jsonify({'error': 'Fichier non trouve'}), 404
+        return jsonify({'error': 'File not found'}), 404
 
     file_path.unlink()
-    return jsonify({'success': True, 'message': f'Fichier supprime: {safe_filename}'})
+    return jsonify({'success': True, 'message': f'Deleted: {safe_filename}'})
 
 
 @app.route('/list-downloads')
 def list_downloads():
-    """Liste tous les fichiers telecharges avec leurs categories"""
+    """List every downloaded file, with its category."""
     files = []
     image_exts = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
     audio_exts = ('.mp3', '.m4a', '.wav', '.flac', '.ogg')
-    # Les fichiers intermediaires ne sont pas des medias : ils apparaissaient
-    # comme des lignes ouvrables et le player echouait dessus.
+    # Intermediate files are not media: they showed up as openable rows and
+    # the player failed on them.
     partial_exts = ('.part', '.ytdl', '.temp', '.tmp')
 
     folders = [
@@ -1342,42 +1346,42 @@ def list_downloads():
 
 @app.route('/stream/<category>/<filename>')
 def stream_file(category, filename):
-    """Sert un fichier pour le player video/audio/photo"""
+    """Serve a file to the video/audio/photo player."""
     safe_filename = sanitize_filename(filename)
     folder = _resolve_category_folder(category)
     if not folder:
-        return jsonify({'error': 'Categorie invalide'}), 400
+        return jsonify({'error': 'Invalid category'}), 400
 
     file_path = (folder / safe_filename).resolve()
     folder_path = folder.resolve()
 
     if not str(file_path).startswith(str(folder_path)):
-        return jsonify({'error': 'Acces refuse'}), 403
+        return jsonify({'error': 'Access denied'}), 403
 
     if file_path.exists():
         return send_file(file_path)
-    return jsonify({'error': 'Fichier non trouve'}), 404
+    return jsonify({'error': 'File not found'}), 404
 
 
 def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=None):
-    """Execute FFmpeg dans un thread avec progression via stderr."""
+    """Run FFmpeg on a worker thread, reading progress off stderr."""
     entry = cut_progress.get(cut_id)
     if not entry:
-        # Le client s'est deconnecte avant le demarrage : le finally du flux SSE
-        # a deja retire l'entree. Sans cette garde le KeyError sautait le
-        # nettoyage et laissait le fichier temporaire, jusqu a 2 Go.
+        # The client disconnected before we started: the SSE stream's finally
+        # has already removed the entry. Without this guard the KeyError skipped
+        # the cleanup and left the temporary file behind, up to 2 GB of it.
         if temp_cleanup:
             temp_cleanup.unlink(missing_ok=True)
         return
     q = entry['queue']
 
     def fail(message, status='error'):
-        """Sortie sans resultat : un seul endroit ou nettoyer.
+        """Leaving with nothing to show: one place to clean up.
 
-        Une annulation garde le fichier source. On arrete justement une decoupe
-        pour la refaire avec d'autres bornes : effacer la source renvoyait un
-        404 « Fichier source non trouve » au moment de relancer, et tuait la
-        preview au passage. Le balayage horaire de temp_uploads/ s'en charge.
+        A cancellation keeps the source file. Stopping a cut is precisely what
+        you do to redo it with different bounds: deleting the source answered
+        404 "source file not found" when relaunching, and killed the preview on
+        the way. The hourly temp_uploads/ sweep takes care of it instead.
         """
         doomed = (out_path,) if status == 'cancelled' else (out_path, temp_cleanup)
         for path in doomed:
@@ -1398,24 +1402,24 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
             '-progress', 'pipe:2',
             str(out_path),
         ]
-        # stdout vers DEVNULL : rien ne le lisait, et un tube jamais draine peut
-        # bloquer FFmpeg des qu'il se remplit.
+        # stdout to DEVNULL: nothing was reading it, and a pipe that is never
+        # drained can block FFmpeg as soon as it fills up.
         proc = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             text=True, **_SUBPROCESS_FLAGS,
         )
-        # Publie pour que /cancel puisse le tuer. Contrairement a yt-dlp,
-        # FFmpeg est un sous-processus : l'arret est immediat et certain.
+        # Published so /cancel can kill it. Unlike yt-dlp, FFmpeg is a
+        # subprocess: stopping it is immediate and certain.
         entry['proc'] = proc
-        # Relire le drapeau juste apres : une annulation tombee entre la
-        # creation du process et sa publication n'aurait vu aucun process a
-        # tuer, et FFmpeg aurait reencode tout le clip pour rien.
+        # Re-read the flag right after: a cancellation landing between
+        # creating the process and publishing it would have seen no process to
+        # kill, and FFmpeg would have re-encoded the whole clip for nothing.
         if entry.get('cancelled'):
             _kill_quietly(proc)
 
-        # Chien de garde sur un timer : l'echeance etait auparavant evaluee dans
-        # la boucle de lecture, donc un FFmpeg bloque qui n'ecrit plus une seule
-        # ligne sur stderr n'etait jamais tue.
+        # A watchdog on a timer: the deadline used to be evaluated inside the
+        # read loop, so a stuck FFmpeg that writes no further line to stderr was
+        # never killed.
         timed_out = threading.Event()
 
         def _kill_stalled():
@@ -1432,10 +1436,10 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
                     try:
                         us = int(line.split('=')[1].strip())
                         pct = min(us / 1_000_000 / duration, 1.0) if duration > 0 else 0
-                        # put_nowait : le retrait de l'entree en finally orpheline
-                        # la queue des que le client part, et un put bloquant
-                        # figeait alors le worker (stderr plus draine, nettoyage
-                        # jamais fait) jusqu'a la fin du processus.
+                        # put_nowait: removing the entry in the finally
+                        # orphans the queue as soon as the client leaves, and a
+                        # blocking put then froze the worker (stderr no longer
+                        # drained, cleanup never done) until the process died.
                         _put_progress(q, {'status': 'progress', 'percent': round(pct * 100, 1)})
                     except (ValueError, ZeroDivisionError):
                         pass
@@ -1444,15 +1448,15 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
             watchdog.cancel()
 
         if entry.get('cancelled'):
-            fail('Decoupe annulee', status='cancelled')
+            fail('Cut stopped', status='cancelled')
             return
 
         if timed_out.is_set():
-            fail('Timeout: decoupe trop longue')
+            fail('Timeout: the cut took too long')
             return
 
         if proc.returncode != 0:
-            fail('Erreur FFmpeg lors de la decoupe')
+            fail('FFmpeg failed while cutting')
             return
 
         if temp_cleanup:
@@ -1463,10 +1467,10 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
             'status': 'complete',
             'filename': out_path.name,
             'size': size,
-            'message': f'Decoupe terminee: {out_path.name}',
+            'message': f'Cut finished: {out_path.name}',
         })
     except FileNotFoundError:
-        fail('FFmpeg non trouve')
+        fail('FFmpeg not found')
     except Exception as e:
         log.error(f"Cut error: {e}")
         fail(str(e))
@@ -1474,9 +1478,9 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
 
 @app.route('/cut-progress/<cut_id>')
 def cut_progress_stream(cut_id):
-    """Endpoint SSE pour le suivi de progression des decoupes"""
+    """SSE endpoint carrying a cut's progress."""
     return _sse_response(cut_progress, cut_id,
-                         'Decoupe inconnue', poll=15, deadline_key='deadline')
+                         'Unknown cut', poll=15, deadline_key='deadline')
 
 
 TEMP_FOLDER = BASE_DIR / "temp_uploads"
@@ -1484,12 +1488,12 @@ TEMP_FOLDER.mkdir(exist_ok=True)
 
 
 def _sweep_stale_partials():
-    """Retire les fichiers partiels orphelins des dossiers de sortie.
+    """Remove orphaned partial files from the output folders.
 
-    Depuis le passage au dossier par job, yt-dlp n'en ecrit plus ici — mais
-    ceux laisses par les anciennes versions sont desormais filtres de la
-    liste, donc invisibles : sans ce balayage ils resteraient pour toujours.
-    Appele au demarrage, quand aucun telechargement n'est en cours.
+    Since the move to a per-job directory yt-dlp no longer writes any here, but
+    the ones left by older versions are now filtered out of the listing and so
+    are invisible: without this sweep they would stay forever. Called at
+    startup, when no download is running.
     """
     for folder in (VIDEOS_FOLDER, MUSIC_FOLDER, PHOTOS_FOLDER):
         for pattern in ('*.part', '*.ytdl', '*.temp', '*.tmp'):
@@ -1501,38 +1505,37 @@ def _sweep_stale_partials():
 
 
 def _sweep_work_folder():
-    """Purge les dossiers de travail abandonnes par un worker tue.
+    """Purge work directories abandoned by a worker that was killed.
 
-    Le seuil depasse le timeout maximum d'un telechargement, donc ce balayage
-    ne peut jamais atteindre un job encore vivant.
+    The threshold exceeds a download's maximum lifetime, so this sweep can
+    never reach a job that is still alive.
     """
     _sweep_old_files(WORK_FOLDER, DOWNLOAD_TIMEOUT + SSE_GRACE)
 
 
 def _sweep_temp_uploads():
-    """Purge les uploads abandonnes.
+    """Purge abandoned uploads.
 
-    Un fichier n'etait supprime que sur le chemin de la decoupe : abandonner
-    via 'Changer de fichier' le laissait indefiniment sur le disque, jusqu'a
-    2 GB par abandon.
+    A file was only deleted along the cut path: walking away through "Change
+    file" left it on disk indefinitely, up to 2 GB each time.
     """
     _sweep_old_files(TEMP_FOLDER, 3600)
 
 
 @app.route('/upload-for-cut', methods=['POST'])
 def upload_for_cut():
-    """Upload un fichier pour le pre-visualiser avant decoupe"""
+    """Receive a file so it can be previewed before cutting."""
     _sweep_temp_uploads()
     if 'file' not in request.files:
-        return jsonify({'error': 'Aucun fichier envoye'}), 400
+        return jsonify({'error': 'No file sent'}), 400
 
     file = request.files['file']
     if not file.filename:
-        return jsonify({'error': 'Nom de fichier vide'}), 400
+        return jsonify({'error': 'Empty filename'}), 400
 
     ext = Path(file.filename).suffix.lower()
     if ext not in ('.mp3', '.mp4', '.mkv', '.webm', '.m4a', '.wav', '.flac', '.ogg', '.avi', '.mov'):
-        return jsonify({'error': f'Format non supporte: {ext}'}), 400
+        return jsonify({'error': f'Unsupported format: {ext}'}), 400
 
     safe_name = sanitize_filename(file.filename)
     temp_id = str(uuid.uuid4())[:8]
@@ -1546,7 +1549,7 @@ def upload_for_cut():
 
     if duration <= 0:
         temp_path.unlink(missing_ok=True)
-        return jsonify({'error': 'Impossible de lire la duree du fichier. Format non supporte ou fichier corrompu.'}), 400
+        return jsonify({'error': 'Could not read the file duration. Unsupported format, or the file is damaged.'}), 400
 
     log.info(f"Upload for cut: {safe_name} ({file_size / 1024 / 1024:.1f} MB)")
     return jsonify({
@@ -1560,19 +1563,19 @@ def upload_for_cut():
 
 @app.route('/stream-temp/<filename>')
 def stream_temp(filename):
-    """Sert un fichier temporaire pour la pre-visualisation"""
+    """Serve an uploaded file back for the preview."""
     safe_name = sanitize_filename(filename)
     file_path = (TEMP_FOLDER / safe_name).resolve()
     if not str(file_path).startswith(str(TEMP_FOLDER.resolve())):
-        return jsonify({'error': 'Acces refuse'}), 403
+        return jsonify({'error': 'Access denied'}), 403
     if not file_path.exists():
-        return jsonify({'error': 'Fichier non trouve'}), 404
+        return jsonify({'error': 'File not found'}), 404
     return send_file(file_path)
 
 
 @app.route('/cut-uploaded', methods=['POST'])
 def cut_uploaded():
-    """Decoupe un fichier uploade et renvoie le resultat"""
+    """Cut an uploaded file and hand back the id its progress stream will use."""
     data = request.get_json()
     temp_name = data.get('temp_name')
     start = data.get('start', 0)
@@ -1580,21 +1583,21 @@ def cut_uploaded():
     original_name = data.get('original_name', '')
 
     if not temp_name or end is None:
-        return jsonify({'error': 'Parametres manquants'}), 400
+        return jsonify({'error': 'Missing parameters'}), 400
     try:
         start = float(start)
         end = float(end)
     except (TypeError, ValueError):
-        return jsonify({'error': 'Les temps doivent etre des nombres'}), 400
+        return jsonify({'error': 'Times must be numbers'}), 400
     if end <= start:
-        return jsonify({'error': 'Le temps de fin doit etre apres le debut'}), 400
+        return jsonify({'error': 'The end time must come after the start'}), 400
 
     safe_temp = sanitize_filename(temp_name)
     temp_path = (TEMP_FOLDER / safe_temp).resolve()
     if not str(temp_path).startswith(str(TEMP_FOLDER.resolve())):
-        return jsonify({'error': 'Acces refuse'}), 403
+        return jsonify({'error': 'Access denied'}), 403
     if not temp_path.exists():
-        return jsonify({'error': 'Fichier source non trouve'}), 404
+        return jsonify({'error': 'Source file not found'}), 404
 
     stem = Path(original_name).stem if original_name else temp_path.stem
     stem = sanitize_filename(stem)
@@ -1622,7 +1625,7 @@ def cut_uploaded():
 
 
 def _get_media_duration(filepath):
-    """Obtient la duree d'un fichier media via ffprobe"""
+    """Read a media file's duration with ffprobe."""
     try:
         cmd = [
             FFPROBE_PATH, '-v', 'quiet',
@@ -1641,7 +1644,7 @@ def _get_media_duration(filepath):
 
 @app.route('/open-folder', methods=['POST'])
 def open_folder():
-    """Ouvre le dossier de telechargements dans l'explorateur"""
+    """Open the downloads folder in Explorer."""
     folder = str(DOWNLOAD_FOLDER.resolve())
     try:
         if platform.system() == 'Windows':
@@ -1657,16 +1660,16 @@ def open_folder():
 
 @app.route('/open-file/<category>/<filename>', methods=['POST'])
 def open_file(category, filename):
-    """Ouvre l'explorateur avec le fichier selectionne"""
+    """Open Explorer with the file selected."""
     safe_name = sanitize_filename(filename)
     folder = _resolve_category_folder(category)
     if not folder:
-        return jsonify({'error': 'Categorie invalide'}), 400
+        return jsonify({'error': 'Invalid category'}), 400
     file_path = (folder / safe_name).resolve()
     if not str(file_path).startswith(str(folder.resolve())):
-        return jsonify({'error': 'Acces refuse'}), 403
+        return jsonify({'error': 'Access denied'}), 403
     if not file_path.exists():
-        return jsonify({'error': 'Fichier non trouve'}), 404
+        return jsonify({'error': 'File not found'}), 404
     try:
         if platform.system() == 'Windows':
             subprocess.Popen([EXPLORER, '/select,', str(file_path)], **_SUBPROCESS_FLAGS)
@@ -1680,7 +1683,7 @@ def open_file(category, filename):
 
 
 def _migrate_legacy_folders():
-    """Migre les fichiers des anciens dossiers vers la nouvelle structure"""
+    """Move files from the old folder names into the current structure."""
     migrations = [
         (DOWNLOAD_FOLDER / "YouTube", VIDEOS_FOLDER),
         (DOWNLOAD_FOLDER / "YouTube_MP3", MUSIC_FOLDER),
@@ -1711,7 +1714,7 @@ def _migrate_legacy_folders():
             except OSError:
                 pass
     if moved:
-        log.info(f"Migration: {moved} fichier(s) deplace(s) vers la nouvelle structure")
+        log.info(f"Migration: moved {moved} file(s) into the current structure")
 
 
 if __name__ == '__main__':

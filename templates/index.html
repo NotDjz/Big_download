@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -16,69 +16,69 @@
             <div class="logo">BIG <span>DL</span></div>
 
             <nav class="tabs">
-                <button class="tab active" data-tab="download">Telecharger</button>
-                <button class="tab" data-tab="cut">Decouper</button>
+                <button class="tab active" data-tab="download">Download</button>
+                <button class="tab" data-tab="cut">Cut</button>
             </nav>
 
-            <!-- Panneau : telecharger -->
+            <!-- Panel: download -->
             <div id="tab-download" class="tab-content">
                 <div class="search-zone">
                     <input type="text" id="url-input" class="search-input"
-                           placeholder="Colle un lien..."
+                           placeholder="Paste a link..."
                            autocomplete="off" spellcheck="false">
                     <div id="platform-badge" class="platform-badge hidden"></div>
-                    <button id="go-btn" class="go-btn">Telecharger</button>
+                    <button id="go-btn" class="go-btn">Download</button>
                 </div>
                 <p class="supported-platforms">
                     <span>YouTube</span><span>Instagram</span><span>TikTok</span><span>X</span><span>SoundCloud</span>
                 </p>
             </div>
 
-            <!-- Panneau : decouper -->
+            <!-- Panel: cut -->
             <div id="tab-cut" class="tab-content hidden">
                 <div id="cut-upload-zone" class="cut-upload-zone">
                     <div class="cut-dropzone" id="cut-dropzone">
-                        <div class="cut-dropzone-text">Glisse un fichier ici</div>
-                        <div class="cut-dropzone-sub">ou clique pour choisir<br>MP4, MP3, MKV, WAV...</div>
+                        <div class="cut-dropzone-text">Drop a file here</div>
+                        <div class="cut-dropzone-sub">or click to choose<br>MP4, MP3, MKV, WAV...</div>
                         <input type="file" id="cut-file-input" accept="video/*,audio/*,.mp3,.mp4,.mkv,.webm,.m4a,.wav,.flac,.ogg,.avi,.mov" hidden>
                     </div>
                 </div>
             </div>
 
-            <!-- Progression et messages, communs aux deux panneaux -->
+            <!-- Progress and messages, shared by both panels -->
             <div id="progress-zone" class="progress-zone hidden">
                 <div class="progress-bar">
                     <div class="progress-fill" id="progress-fill"></div>
                 </div>
                 <div class="progress-info">
-                    <span id="progress-status">Telechargement...</span>
+                    <span id="progress-status">Downloading...</span>
                     <span id="progress-percent">0%</span>
                     <span id="progress-speed"></span>
                     <span id="progress-eta"></span>
                 </div>
-                <button id="cancel-btn" class="cancel-btn">Arreter</button>
+                <button id="cancel-btn" class="cancel-btn">Stop</button>
             </div>
             <div id="status-msg" class="status-msg hidden"></div>
 
             <div class="rail-foot">
-                <button id="open-folder-btn" class="open-folder-btn">Ouvrir le dossier</button>
+                <button id="open-folder-btn" class="open-folder-btn">Open folder</button>
                 <span id="footer-stats"></span>
             </div>
         </aside>
 
-        <!-- ==================== PLAN DE TRAVAIL ==================== -->
+        <!-- ==================== WORKSPACE ==================== -->
         <main class="workspace">
 
-            <!-- Bibliotheque : contenu par defaut -->
+            <!-- Library: the default content -->
             <section id="library" class="library">
                 <header class="library-head">
-                    <h1>Bibliotheque</h1>
+                    <h1>Library</h1>
                     <span class="downloads-count" id="downloads-count"></span>
                 </header>
                 <div id="downloads-list" class="downloads-list"></div>
             </section>
 
-            <!-- Fiche du lien analyse : prend la place de la bibliotheque -->
+            <!-- The analysed link's card: takes the library's place -->
             <div id="result-zone" class="result-zone hidden">
                 <div class="result-card">
                     <div class="result-thumb" id="result-thumb">
@@ -92,12 +92,12 @@
                 </div>
             </div>
 
-            <!-- Editeur de decoupe : prend la place de la bibliotheque -->
+            <!-- The cut editor: takes the library's place -->
             <div id="cut-editor" class="cut-editor hidden">
                 <div class="cut-preview">
                     <div id="cut-preview-container" class="cut-preview-container"></div>
                     <div class="cut-preview-controls">
-                        <button id="cut-play-btn" class="player-btn" aria-label="Lecture">&#9654;</button>
+                        <button id="cut-play-btn" class="player-btn" aria-label="Play">&#9654;</button>
                         <span id="cut-current-time" class="cut-time-display">0:00</span>
                     </div>
                 </div>
@@ -122,9 +122,9 @@
                         <span id="cut-filesize"></span>
                     </div>
                     <div class="cut-btns">
-                        <button id="cut-reset-btn" class="cut-reset-btn">Changer de fichier</button>
-                        <button id="cut-cancel-btn" class="cancel-btn hidden">Arreter</button>
-                        <button id="cut-do-btn" class="trim-cut-btn">Couper</button>
+                        <button id="cut-reset-btn" class="cut-reset-btn">Change file</button>
+                        <button id="cut-cancel-btn" class="cancel-btn hidden">Stop</button>
+                        <button id="cut-do-btn" class="trim-cut-btn">Cut</button>
                     </div>
                 </div>
                 <div id="cut-status" class="trim-status hidden"></div>
@@ -138,10 +138,10 @@
     <div id="player-modal" class="modal hidden">
         <div class="modal-backdrop" id="player-backdrop"></div>
         <div class="modal-content">
-            <button class="modal-close" id="player-close-btn" aria-label="Fermer"></button>
+            <button class="modal-close" id="player-close-btn" aria-label="Close"></button>
             <div id="player-container" class="player-container"></div>
             <div class="player-controls" id="player-controls">
-                <button id="player-play-btn" class="player-btn" aria-label="Lecture"></button>
+                <button id="player-play-btn" class="player-btn" aria-label="Play"></button>
                 <div class="player-seek-wrap">
                     <div class="player-seek-bar" id="player-seek-bar">
                         <div class="player-seek-fill" id="player-seek-fill"></div>
@@ -149,7 +149,7 @@
                 </div>
                 <span class="player-time" id="player-time">0:00 / 0:00</span>
                 <div class="player-volume-wrap">
-                    <button class="player-btn player-vol-icon" id="player-vol-icon" aria-label="Son"></button>
+                    <button class="player-btn player-vol-icon" id="player-vol-icon" aria-label="Sound"></button>
                     <input type="range" id="player-volume" class="player-volume" min="0" max="1" step="0.05" value="0.1">
                 </div>
             </div>

@@ -1,15 +1,19 @@
 <!DOCTYPE html>
-<html lang="fr">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BIG DL — telechargeur de medias pour Windows</title>
-<meta name="description" content="Colle un lien YouTube, Instagram, TikTok, X ou SoundCloud. Recupere la video, l'audio ou la photo. Un seul exe, rien a installer.">
+<title>BIG DL — media downloader for Windows</title>
+<meta name="description" content="Paste a YouTube, Instagram, TikTok, X or SoundCloud link. Get the video, the audio or the photo. One exe, nothing to install.">
 <link rel="icon" type="image/png" href="icon.png">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap">
 <style>
 :root {
   --bg:        #15191f;
+  /* The components of --bg, for the sticky bar: rgba() cannot read a hex value
+     out of a variable, and copying it inline meant the header drifted out of
+     step the first time the ground colour changed. */
+  --bg-rgb:    21, 25, 31;
   --panel:     #1b2028;
   --panel-2:   #1f242d;
   --line:      #272d36;
@@ -36,13 +40,29 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
-/* ---------- en-tete ---------- */
-.top { padding: 34px 0 0; }
-.logo { font-size: 22px; font-weight: 800; letter-spacing: -0.04em; color: var(--strong); }
+/* ---------- header ---------- */
+.top {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(var(--bg-rgb), 0.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+.top .wrap { display: flex; align-items: center; gap: 28px; height: 60px; }
+.logo { font-size: 20px; font-weight: 800; letter-spacing: -0.04em; color: var(--strong); }
 .logo span { color: var(--brand); }
+.top nav { margin-left: auto; display: flex; gap: 22px; font-size: 14.5px; }
+.top nav a { color: var(--dim); }
+.top nav a:hover { color: var(--text); text-decoration: none; }
+@media (max-width: 640px) {
+  .top { position: static; }
+  .top .wrap { height: auto; flex-wrap: wrap; gap: 10px 18px; padding-top: 14px; padding-bottom: 14px; }
+  .top nav { margin-left: 0; width: 100%; flex-wrap: wrap; }
+}
 
 /* ---------- hero ---------- */
-.hero { padding: 56px 0 44px; }
+.hero { padding: 62px 0 40px; }
 h1 {
   font-size: clamp(34px, 5.5vw, 54px);
   font-weight: 800;
@@ -53,7 +73,7 @@ h1 {
   text-wrap: balance;
 }
 .sub { margin-top: 20px; font-size: 19px; color: var(--dim); max-width: 58ch; }
-.get { display: flex; flex-wrap: wrap; align-items: center; gap: 16px 20px; margin-top: 32px; }
+.get { margin-top: 32px; }
 .btn {
   display: inline-block;
   background: var(--accent);
@@ -65,9 +85,25 @@ h1 {
   transition: background .15s;
 }
 .btn:hover { background: var(--accent-hi); text-decoration: none; }
-.get small { color: var(--dimmer); font-size: 14px; }
 
-.shot { margin: 8px 0 0; }
+/* The binary's own label, stated before anything is sold. It also replaces the
+   dotted meta line that used to sit under the button. */
+.specs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  margin-top: 30px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.spec { background: var(--panel); padding: 14px 18px; }
+.spec dt { font-size: 13px; color: var(--dimmer); margin-bottom: 3px; }
+.spec dd { font-size: 15px; font-weight: 600; color: var(--strong); }
+.spec dd a { font-weight: 600; }
+
+.shot { margin: 40px 0 0; }
 .shot img {
   width: 100%;
   display: block;
@@ -78,6 +114,7 @@ h1 {
 
 /* ---------- sections ---------- */
 section { padding: 52px 0; border-top: 1px solid var(--line); }
+section:first-of-type { border-top: 0; }
 h2 {
   font-size: 25px;
   font-weight: 700;
@@ -85,18 +122,21 @@ h2 {
   color: var(--strong);
   margin-bottom: 8px;
 }
+/* On the section and not on the h2: the ids are on the sections, so that is
+   what a jump targets. On the h2 the rule matched nothing and each heading
+   slid under the 60 px sticky header. */
+section[id] { scroll-margin-top: 78px; }
 .lede { color: var(--dim); max-width: 62ch; margin-bottom: 26px; }
 p + p { margin-top: 14px; }
 
-/* sources */
-/* 165px : cinq colonnes tiennent a pleine largeur, donc aucune plateforme ne
-   se retrouve seule sur sa ligne. */
+/* 165px: five columns fit the full width, so no platform is left alone on its
+   own row. */
 .sources { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 2px; }
 .src { padding: 16px 18px; background: var(--panel); }
 .src b { display: block; color: var(--strong); font-weight: 600; font-size: 15.5px; }
 .src span { font-size: 14px; color: var(--dim); }
 
-/* arborescence : le vocabulaire du sujet, pas une decoration */
+/* The directory tree: the subject's own vocabulary, not decoration */
 .tree {
   background: var(--panel);
   border-left: 2px solid var(--accent);
@@ -110,7 +150,7 @@ p + p { margin-top: 14px; }
 .tree b { color: var(--text); font-weight: 400; }
 .tree i { color: var(--dimmer); font-style: normal; }
 
-/* faits : ce que l'app fait vraiment a la machine */
+/* The facts: what the app actually does to the machine */
 .facts { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .fact { display: grid; grid-template-columns: minmax(0, 15ch) minmax(0, 1fr); gap: 4px 26px; padding: 16px 20px; background: var(--panel); }
 .fact dt { font-weight: 600; color: var(--strong); font-size: 15px; }
@@ -138,108 +178,129 @@ pre {
 }
 pre .c { color: var(--dimmer); }
 
-footer { padding: 40px 0 64px; border-top: 1px solid var(--line); color: var(--dimmer); font-size: 14.5px; }
+footer { padding: 34px 0 64px; border-top: 1px solid var(--line); color: var(--dimmer); font-size: 14.5px; }
 footer a { color: var(--dim); }
+.foot-links { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 10px; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 </style>
 </head>
 <body>
 
+<header class="top">
+  <div class="wrap">
+    <span class="logo">BIG <span>DL</span></span>
+    <nav>
+      <a href="#safety">What it does to your machine</a>
+      <a href="#platforms">Platforms</a>
+      <a href="#trim">Trimming</a>
+      <a href="#failures">If it fails</a>
+      <a href="https://github.com/NotDjz/Big_download">GitHub</a>
+    </nav>
+  </div>
+</header>
+
 <div class="wrap">
-  <header class="top">
-    <div class="logo">BIG <span>DL</span></div>
-  </header>
 
   <div class="hero">
-    <h1>Colle un lien. Recupere le fichier.</h1>
-    <p class="sub">Un telechargeur de medias pour Windows : video, audio ou photo depuis YouTube, Instagram, TikTok, X et SoundCloud. Un seul executable, rien a installer. Seules les photos Instagram demandent un fichier de cookies.</p>
-    <p class="get">
-      <a class="btn" href="https://github.com/NotDjz/Big_download/releases/latest">Voir la derniere version</a>
-      <small>~99 Mo &middot; Windows 10 et 11 &middot; <a href="https://github.com/NotDjz/Big_download">code source</a></small>
-    </p>
+    <h1>Paste a link. Get the file.</h1>
+    <p class="sub">A media downloader for Windows: video, audio or photos from YouTube, Instagram, TikTok, X and SoundCloud. One executable, nothing to install. Only Instagram photos need a cookies file.</p>
+    <p class="get"><a class="btn" href="https://github.com/NotDjz/Big_download/releases/latest">Get the latest release</a></p>
+
+    <dl class="specs">
+      <div class="spec"><dt>Platform</dt><dd>Windows 10 and 11</dd></div>
+      <div class="spec"><dt>Install</dt><dd>None, a portable exe</dd></div>
+      <div class="spec"><dt>Size</dt><dd>98 MB</dd></div>
+      <div class="spec"><dt>Trims</dt><dd>Local files, 2 GB max</dd></div>
+      <div class="spec"><dt>Licence</dt><dd><a href="https://github.com/NotDjz/Big_download/blob/main/LICENSE">MIT</a></dd></div>
+    </dl>
   </div>
 
   <figure class="shot">
-    <img src="screenshot.png" alt="L'interface de BIG DL : a gauche le champ de collage et les onglets, a droite la bibliotheque des fichiers telecharges." width="1100" height="760">
-    <figcaption>La bibliotheque montree ici est fictive.</figcaption>
+    <img src="screenshot.png" alt="The BIG DL interface: the paste field and tabs on the left, the library of downloaded files on the right." width="1100" height="760">
+    <figcaption>The library shown here is made up.</figcaption>
   </figure>
 
-  <section>
-    <h2>Ce qu'il se passe quand tu le lances</h2>
-    <p class="lede">C'est un executable non signe, telecharge depuis le depot d'un inconnu. Autant que tu saches exactement ce qu'il fait avant de double-cliquer.</p>
+  <section id="safety">
+    <h2>What happens when you run it</h2>
+    <p class="lede">This is an unsigned executable, downloaded from a stranger's repository. You should know exactly what it does before you double-click.</p>
     <dl class="facts">
       <div class="fact">
-        <dt>Windows proteste</dt>
-        <dd>SmartScreen affiche un avertissement : le binaire n'a pas de certificat d'editeur, qui coute quelques centaines d'euros par an. « Informations complementaires » puis « Executer quand meme ».</dd>
+        <dt>Windows objects</dt>
+        <dd>SmartScreen shows a warning: the binary has no publisher certificate, which costs a few hundred euros a year. Choose "More info", then "Run anyway".</dd>
       </div>
       <div class="fact">
-        <dt>Rien ne s'installe</dt>
-        <dd>Aucune entree au registre, aucun service, aucun raccourci : la supprimer, c'est supprimer le fichier. A chaque lancement elle deballe tout de meme son contenu — dont FFmpeg, qui pese l'essentiel des 99 Mo — dans <code>%TEMP%</code>, et l'efface en se fermant proprement.</dd>
+        <dt>Nothing is installed</dt>
+        <dd>No registry entries, no service, no shortcut: deleting it means deleting the file. It does unpack its contents on every launch — including FFmpeg, which accounts for most of the 98 MB — into <code>%TEMP%</code>, and clears them when it closes cleanly.</dd>
       </div>
       <div class="fact">
-        <dt>Elle ecrit a cote d'elle</dt>
-        <dd>Les dossiers ci-dessous sont crees dans le repertoire de l'executable, jamais ailleurs. Range-le ou tu veux garder tes fichiers.</dd>
+        <dt>It writes beside itself</dt>
+        <dd>The folders below are created in the executable's own directory, never anywhere else. Put it wherever you want to keep your files.</dd>
       </div>
       <div class="fact">
-        <dt>Le reseau</dt>
-        <dd>Un serveur local sur <code>127.0.0.1:5555</code>, jamais expose au reseau. Il refuse les requetes emises par une autre page web, ce qui empeche un site visite dans ton navigateur de lire ou supprimer tes fichiers ; un programme lance sur ta machine, lui, peut lui parler. Vers l'exterieur : uniquement les plateformes dont tu colles les liens, aucune telemetrie, aucune verification de mise a jour.</dd>
+        <dt>The network</dt>
+        <dd>A local server on <code>127.0.0.1:5555</code>, never exposed to the network. It refuses requests issued by another web page, which stops a site open in your browser from reading or deleting your files; a program running on your machine can still talk to it. Outbound: only the platforms whose links you paste. No telemetry, no update check.</dd>
       </div>
     </dl>
     <div class="tree" style="margin-top:22px">
       <b>BigDownloader.exe</b><br>
       <b>downloads/</b><br>
-      &nbsp;&nbsp;<b>Videos/</b> &nbsp; <i>les MP4</i><br>
-      &nbsp;&nbsp;<b>Music/</b> &nbsp;&nbsp; <i>les MP3</i><br>
-      &nbsp;&nbsp;<b>Photos/</b> &nbsp; <i>les JPG Instagram</i><br>
-      <b>.work/</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <i>fichiers en cours, vide au repos</i><br>
-      <b>temp_uploads/</b> <i>fichiers deposes pour la decoupe</i><br>
-      <b>cookies.txt</b> &nbsp; <i>si tu en ajoutes un, pour les photos Instagram</i>
+      &nbsp;&nbsp;<b>Videos/</b> &nbsp; <i>the MP4s</i><br>
+      &nbsp;&nbsp;<b>Music/</b> &nbsp;&nbsp; <i>the MP3s</i><br>
+      &nbsp;&nbsp;<b>Photos/</b> &nbsp; <i>Instagram JPGs</i><br>
+      <b>.work/</b> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <i>files in flight, empty at rest</i><br>
+      <b>temp_uploads/</b> <i>files dropped in for trimming</i><br>
+      <b>cookies.txt</b> &nbsp; <i>if you add one, for Instagram photos</i>
     </div>
   </section>
 
-  <section>
-    <h2>Les plateformes</h2>
-    <p class="lede">Colle l'adresse et l'application reconnait la plateforme, puis propose les formats disponibles. Pour YouTube, utilise une adresse <code>youtube.com</code> ou <code>youtu.be</code> : les variantes <code>m.</code>, <code>music.</code> et <code>/live/</code> ne sont pas reconnues.</p>
+  <section id="platforms">
+    <h2>Platforms</h2>
+    <p class="lede">Paste the address and the app recognises the platform, then offers the formats it found. For YouTube, use a <code>youtube.com</code> or <code>youtu.be</code> address: the <code>m.</code>, <code>music.</code> and <code>/live/</code> variants are not recognised.</p>
     <div class="sources">
-      <div class="src"><b>YouTube</b><span>Video jusqu'a la 4K, audio MP3, shorts, playlists entieres</span></div>
-      <div class="src"><b>Instagram</b><span>Reels et videos ; photos avec un fichier cookies</span></div>
-      <div class="src"><b>TikTok</b><span>Videos sans filigrane</span></div>
-      <div class="src"><b>X</b><span>Videos des publications</span></div>
-      <div class="src"><b>SoundCloud</b><span>Pistes en MP3</span></div>
+      <div class="src"><b>YouTube</b><span>Video up to 4K, MP3 audio, shorts, whole playlists</span></div>
+      <div class="src"><b>Instagram</b><span>Reels and videos; photos with a cookies file</span></div>
+      <div class="src"><b>TikTok</b><span>Videos without the watermark</span></div>
+      <div class="src"><b>X</b><span>Videos from posts</span></div>
+      <div class="src"><b>SoundCloud</b><span>Tracks as MP3</span></div>
     </div>
   </section>
 
-  <section>
-    <h2>Decouper sans reencoder tout le fichier</h2>
-    <p class="lede">L'onglet Decouper prend un fichier depuis ton disque, pas seulement ceux telecharges ici : MP4, MKV, WEBM, AVI, MOV, MP3, M4A, WAV, FLAC ou OGG, jusqu'a 2 Go. Deux poignees sur une piste, un apercu qui suit, et FFmpeg fait la coupe.</p>
-    <p>La coupe est reencodee pour tomber juste a l'image pres plutot qu'au groupe d'images le plus proche, ce qui evite le blanc ou le saut au demarrage. Le fichier d'origine n'est jamais touche : la coupe part dans <code>downloads/</code> avec le reste, sous <code>nom_v2.mp4</code>, puis <code>_v3</code>, et ainsi de suite.</p>
-    <p>Une coupe en cours s'arrete avec le meme bouton <b>Arreter</b>, et le fichier charge reste en place : on arrete generalement une coupe pour la refaire avec d'autres bornes, pas pour changer de fichier.</p>
+  <section id="trim">
+    <h2>Trim without re-encoding the whole file</h2>
+    <p class="lede">The Cut tab takes a file from your disk, not only the ones downloaded here: MP4, MKV, WEBM, AVI, MOV, MP3, M4A, WAV, FLAC or OGG, up to 2 GB. Two handles on a track, a preview that follows them, and FFmpeg makes the cut.</p>
+    <p>The cut is re-encoded so it lands on the exact frame rather than the nearest group of frames, which avoids the blank or the jump at the start. The original file is never touched: the cut lands in <code>downloads/</code> with everything else, as <code>name_v2.mp4</code>, then <code>_v3</code>, and so on.</p>
+    <p>A cut in progress stops with the same <b>Stop</b> button, and the loaded file stays put: you usually stop a cut to redo it with different bounds, not to change files.</p>
   </section>
 
-  <section>
-    <h2>Depuis le code source</h2>
-    <p class="lede">Python 3.10 ou plus recent. FFmpeg n'a pas besoin d'etre installe sur la machine, mais il doit etre la avant <code>install.bat</code>, qui verifie sa presence et s'arrete sinon.</p>
+  <section id="source">
+    <h2>From source</h2>
+    <p class="lede">Python 3.10 or newer. FFmpeg does not need to be installed on the machine, but it does need to be there before <code>install.bat</code>, which checks for it and stops if it is missing.</p>
     <pre><span class="c">git clone https://github.com/NotDjz/Big_download.git</span>
 <span class="c">cd Big_download</span>
 py download_ffmpeg.py
 install.bat
 run.bat</pre>
-    <p>Lance ces commandes depuis la racine du depot : <code>install.bat</code> travaille dans le dossier courant. <code>build.bat</code> produit l'executable et y embarque FFmpeg.</p>
+    <p>Run these from the root of the repository: <code>install.bat</code> works in the current directory. <code>build.bat</code> produces the executable and embeds FFmpeg in it.</p>
   </section>
 
-  <section>
-    <h2>Quand un telechargement echoue</h2>
-    <p class="lede">La cause la plus frequente est une erreur 403.</p>
-    <p>Les plateformes durcissent regulierement leurs protections, et yt-dlp — la bibliotheque qui fait le travail — suit avec quelques jours de retard. L'executable embarque une version figee : il ne peut pas se mettre a jour tout seul. Une version de BIG DL vieille de quelques mois finira donc par se faire refuser.</p>
-    <p>Recupere la <a href="https://github.com/NotDjz/Big_download/releases/latest">derniere version</a>. Depuis le code source, <code>run.bat</code> met yt-dlp a jour a chaque lancement.</p>
-    <p>En attendant, un bouton <b>Arreter</b> apparait pendant le telechargement. Il libere l'interface tout de suite, sans attendre que le travail en cours reponde, et le fichier a moitie recupere est efface plutot que laisse dans la bibliotheque. Auparavant il fallait fermer la fenetre, ce qui coupait le travail en plein milieu et laissait ses fichiers intermediaires sur le disque jusqu'au demarrage suivant. La coupure elle-meme est presque toujours immediate ; dans le cas rare ou yt-dlp reste bloque a un endroit qui ne rend jamais la main, la tache s'arrete a la fermeture de l'application, mais tu peux relancer sans attendre.</p>
+  <section id="failures">
+    <h2>When a download fails</h2>
+    <p class="lede">The most common cause is a 403.</p>
+    <p>Platforms tighten their protections regularly, and yt-dlp — the library doing the work — follows a few days behind. The executable bundles a frozen version and cannot update itself, so a BIG DL a few months old will eventually start getting refused.</p>
+    <p>Grab the <a href="https://github.com/NotDjz/Big_download/releases/latest">latest release</a>. From source, <code>run.bat</code> updates yt-dlp on every launch.</p>
+    <p>In the meantime, a <b>Stop</b> button appears while a download runs. It frees the interface immediately, without waiting for the work in progress to answer, and the half-fetched file is deleted rather than left in the library. Before it, you had to close the window, which cut the work off mid-way and left its intermediate files on disk until the next launch. The interruption itself is nearly always immediate; in the rare case where yt-dlp is stuck somewhere that never yields, the task ends when the application closes, but you can start again without waiting.</p>
   </section>
 
   <footer>
-    <p>BIG DL est distribue sous licence MIT. Telecharge ce que tu as le droit de telecharger.</p>
-    <p style="margin-top:8px"><a href="https://github.com/NotDjz/Big_download">github.com/NotDjz/Big_download</a></p>
+    <p>Download what you have the right to download.</p>
+    <p class="foot-links">
+      <a href="https://github.com/NotDjz/Big_download">Source code</a>
+      <a href="https://github.com/NotDjz/Big_download/blob/main/LICENSE">MIT licence</a>
+      <a href="https://github.com/NotDjz/Big_download/releases/latest">Releases</a>
+    </p>
   </footer>
+
 </div>
 
 </body>
