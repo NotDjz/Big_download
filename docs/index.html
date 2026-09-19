@@ -6,8 +6,48 @@
 <title>BIG DL — media downloader for Windows</title>
 <meta name="description" content="Paste a YouTube, Instagram, TikTok, X or SoundCloud link. Get the video, the audio or the photo. One exe, nothing to install.">
 <link rel="icon" type="image/png" href="icon.png">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&display=swap">
+<!-- The @font-face below sits in an inline <style>, so the browser only
+     discovers the file once it has parsed the CSS. Preloading it starts the
+     34 KB in parallel with the parse instead, which is what templates/index.html
+     already does for the same file. crossorigin is required even same-origin:
+     fonts are always fetched in CORS mode. -->
+<link rel="preload" href="fonts/archivo-latin.woff2" as="font" type="font/woff2" crossorigin>
 <style>
+/* Archivo is served from this repository rather than from fonts.googleapis.com.
+   This page's subject is what the software does with your data, so it should
+   not make the reader's browser announce itself to a third party in order to
+   render that argument. The files are the same two subsets the application
+   bundles, copied from static/fonts/: GitHub Pages serves this site from docs/,
+   so static/ is not published and this page cannot point at that copy.
+   Licence: docs/fonts/LICENSE.txt */
+@font-face {
+  font-family: 'Archivo';
+  src: url('fonts/archivo-latin.woff2') format('woff2');
+  font-weight: 400 800;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+                 U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+                 U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Archivo';
+  src: url('fonts/archivo-latin-ext.woff2') format('woff2');
+  font-weight: 400 800;
+  font-display: swap;
+  /* U+0304/0308/0329 are deliberately absent here: declared in both blocks, the
+     second one wins, and latin-ext was then fetched for characters it had no
+     need to serve. static/css/style.css carries the same pair and records that
+     case in full. The two lists are duplicated, not shared — a browser reads
+     this file alone — so tests/server_tests.py asserts they stay equal.
+
+     They also stop short of the ranges fonts.googleapis.com used to send:
+     U+2074 and the vietnamese block are missing from both. That is correct.
+     Measured against the cmap of the two files, neither carries those glyphs;
+     declaring them would fetch 34 KB to render nothing. */
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+                 U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF,
+                 U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
 :root {
   --bg:        #15191f;
   /* The components of --bg, for the sticky bar: rgba() cannot read a hex value

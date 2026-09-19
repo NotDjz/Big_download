@@ -97,8 +97,10 @@ ABOUT THE COPIES IN THIS DIRECTORY
 -----------------------------------------------------------
 
 Two subsets of the variable version (weights 400-800), latin and latin-ext,
-fetched from fonts.gstatic.com. Neither is modified: they are the upstream
-files byte for byte.
+fetched from fonts.gstatic.com and unmodified. They are byte-for-byte copies
+of static/fonts/, which the exe bundles.
 
-The application bundles them into the exe, because it works offline and its
-CSP forbids fetching a font from anywhere but itself.
+A second copy is needed because GitHub Pages serves the site from docs/: the
+application's copy is never published, so the landing page cannot point at it.
+Serving the font from this repository is what keeps the page from making its
+reader announce themselves to a third party.

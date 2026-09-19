@@ -20,6 +20,7 @@ import contextlib
 import io
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -124,15 +125,15 @@ client = app.app.test_client()
 def test_origin_guard():
     section("Origin guard")
     cases = [
-        ("legitimate Host 127.0.0.1", {'Host': '127.0.0.1:%d' % app.PORT}, 'autorise'),
-        ("legitimate Host localhost", {'Host': 'localhost:%d' % app.PORT}, 'autorise'),
+        ("legitimate Host 127.0.0.1", {'Host': '127.0.0.1:%d' % app.PORT}, 'allow'),
+        ("legitimate Host localhost", {'Host': 'localhost:%d' % app.PORT}, 'allow'),
         ("attacker Host (DNS rebinding)", {'Host': 'evil.example:%d' % app.PORT}, 'refuse'),
         ("third-party Origin", {**H, 'Origin': 'https://evil.example'}, 'refuse'),
-        ("legitimate Origin", {**H, 'Origin': 'http://localhost:%d' % app.PORT}, 'autorise'),
+        ("legitimate Origin", {**H, 'Origin': 'http://localhost:%d' % app.PORT}, 'allow'),
     ]
     for name, headers, expected in cases:
         r = client.get('/list-downloads', headers=headers)
-        got = 'refuse' if r.status_code == 403 else 'autorise'
+        got = 'refuse' if r.status_code == 403 else 'allow'
         check(name, got == expected, '-> %s %s (expected %s)' % (r.status_code, got, expected))
 
     # Being multipart, this route escaped the accidental CORS protection the
@@ -149,14 +150,14 @@ def test_sec_fetch_site():
     # third-party site walked through the guard and served as an oracle on which
     # files were present.
     cases = [
-        ("pywebview navigation (none)", 'none', 'autorise'),
-        ("same-origin subresource", 'same-origin', 'autorise'),
+        ("pywebview navigation (none)", 'none', 'allow'),
+        ("same-origin subresource", 'same-origin', 'allow'),
         ("<video> cross-site (the oracle)", 'cross-site', 'refuse'),
         ("same-site, different origin", 'same-site', 'refuse'),
     ]
     for name, sfs, expected in cases:
         r = client.get('/stream/Videos/x.mp4', headers={**H, 'Sec-Fetch-Site': sfs})
-        got = 'refuse' if r.status_code == 403 else 'autorise'
+        got = 'refuse' if r.status_code == 403 else 'allow'
         check(name, got == expected, '-> %s %s (expected %s)' % (r.status_code, got, expected))
 
     r = client.get('/stream/Videos/x.mp4', headers=H)
@@ -765,11 +766,160 @@ def test_real_cancellation():
 
 
 # ===================================================== running it
+# ===================================================== the landing page
+# Commented-out markup is never fetched, and docs/index.html names
+# fonts.googleapis.com twice in prose — in the very comments explaining why it
+# no longer calls it. Scanning the raw text would flag the explanation as the
+# offence.
+_COMMENTS = re.compile(r'<!--.*?-->|/\*.*?\*/', re.S)
+# One alternation per tag that fetches on its own. It is deliberately long:
+# `len(fetched) >= 4` below catches a matcher that has stopped seeing
+# everything, not one that only ever saw <link>, <img> and <script>.
+_FETCHES = re.compile(
+    r'<(?:link|img|script|iframe|video|audio|source|embed|object|track|use)\b'
+    r'[^>]*?\b(?:href|src|data)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s">]+))',
+    re.I | re.S)
+_SRCSET = re.compile(r'\bsrcset\s*=\s*(?:"([^"]*)"|\'([^\']*)\')', re.I)
+_STYLE_URL = re.compile(r'(?:\burl\(\s*|@import\s+)[\'"]?([^\'")\s;]+)', re.I)
+_REFRESH = re.compile(r'<meta\b[^>]*?http-equiv\s*=\s*[\'"]?refresh[^>]*?url\s*=\s*([^\s"\';>]+)',
+                      re.I | re.S)
+_ANCHORS = re.compile(r'<a\b[^>]*?\bhref\s*=\s*(?:"([^"]*)"|\'([^\']*)\')', re.I | re.S)
+
+
+def _matched(pattern, text):
+    return [next(g for g in m.groups() if g is not None)
+            for m in pattern.finditer(text)]
+
+
+def _page_refs(text):
+    """The sub-resources a browser fetches on its own, and the links it does not.
+
+    The distinction is the whole point: an <a href> to github.com is the reader
+    choosing to click, while a <link> or a src= is the page calling out before
+    they have decided anything. Only the second kind can leak a visit.
+    """
+    text = _COMMENTS.sub(' ', text)
+    fetched = _matched(_FETCHES, text)
+    fetched += _matched(_STYLE_URL, text)
+    fetched += _matched(_REFRESH, text)
+    for value in _matched(_SRCSET, text):
+        fetched += [c.split()[0] for c in value.split(',') if c.split()]
+    return fetched, _matched(_ANCHORS, text)
+
+
+def _outbound(refs):
+    return [r for r in refs if r.startswith(('http://', 'https://', '//'))]
+
+
+def _ranges(text):
+    return [re.sub(r'\s+', ' ', m.group(1)).strip()
+            for m in re.finditer(r'unicode-range:\s*([^;]+);', text)]
+
+
+# Each of these once slipped past a narrower matcher: a different tag, a single
+# quote, no quote at all, or a capital letter.
+_ESCAPES = [
+    ('iframe', '<iframe src="https://evil.example/x"></iframe>'),
+    ('video', '<video src="https://evil.example/x.mp4"></video>'),
+    ('source', '<source src="https://evil.example/x.webm">'),
+    ('object data', '<object data="https://evil.example/x.swf"></object>'),
+    ('embed', '<embed src="https://evil.example/x">'),
+    ('svg use', '<use href="https://evil.example/x.svg#i"/>'),
+    ('single quotes', "<script src='https://evil.example/a.js'></script>"),
+    ('no quotes', '<script src=https://evil.example/a.js></script>'),
+    ('uppercase', '<SCRIPT SRC="https://evil.example/a.js"></SCRIPT>'),
+    ('meta refresh', '<meta http-equiv="refresh" content="0;url=https://evil.example/">'),
+    ('css @import', '<style>@import "https://evil.example/a.css";</style>'),
+    ('srcset', '<img srcset="https://evil.example/a.png 2x" src="icon.png">'),
+]
+
+
+def test_landing_page():
+    section('The landing page calls nobody')
+    # docs/index.html is not served by this app, so there is no route to drive
+    # here. It is checked anyway: it is the one file in the repository that a
+    # stranger loads in their own browser, and its declared subject is what the
+    # software does with your data. A page arguing that while asking a font CDN
+    # to identify its reader was answering its own question. That property is
+    # worth exactly as much as the test that holds it.
+    docs = ROOT / 'docs'
+    page = (docs / 'index.html').read_text(encoding='utf-8')
+    fetched, links = _page_refs(page)
+
+    # A matcher that has stopped matching passes every test built on it.
+    check('the page does fetch sub-resources', len(fetched) >= 4,
+          '%d found: %s' % (len(fetched), ', '.join(sorted(set(fetched)))))
+    check('none of them is third-party', not _outbound(fetched),
+          ', '.join(_outbound(fetched)) or 'all relative')
+    # The page is HTML and CSS only. Checking that is cheaper and stricter than
+    # trying to read an inline script for the call it makes.
+    check('the page carries no script at all', '<script' not in page.lower())
+
+    # Control: the same matcher over twelve shapes the leak could take,
+    # including the stylesheet link this change removed. Without these runs, a
+    # matcher that only ever recognised <link> would still come up green above.
+    # The anchors first. A replace() that matches nothing injects nothing, and
+    # every control below would then pass by measuring an untouched page.
+    check('the control anchors exist', page.count('</head>') == 1 and page.count('</body>') == 1,
+          'head %d, body %d' % (page.count('</head>'), page.count('</body>')))
+    control = page.replace(
+        '</head>',
+        '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo">\n</head>',
+        1)
+    check('control: the googleapis link is caught',
+          bool(_outbound(_page_refs(control)[0])), 'reintroduced -> flagged')
+    missed = [name for name, markup in _ESCAPES
+              if not _outbound(_page_refs(page.replace('</body>', markup + '</body>', 1))[0])]
+    check('control: every escape shape is caught', not missed,
+          'missed: %s' % ', '.join(missed) if missed else '%d shapes' % len(_ESCAPES))
+    # And the mirror of it: the same link, commented out, must NOT be caught.
+    # That is what makes the stripping above a decision rather than an accident.
+    inert = page.replace(
+        '</head>',
+        '<!-- <link rel="stylesheet" href="https://fonts.googleapis.com/x.css"> -->\n</head>', 1)
+    check('control: a commented-out link is not a call',
+          _page_refs(inert)[0] == fetched, 'inert -> same refs as before')
+    # And the comments naming fonts.googleapis.com must not count as a call.
+    check('a hostname named in a comment is not a call',
+          'googleapis' in page and not [f for f in fetched if 'googleapis' in f],
+          'named %d time(s), fetched 0' % page.count('googleapis'))
+
+    outside = _outbound(links)
+    check('every outbound link goes to github.com',
+          bool(outside) and all(l.startswith('https://github.com/') for l in outside),
+          '%d link(s)' % len(outside))
+
+    # Pages publishes docs/ and nothing else, so a reference climbing out of it
+    # is a 404 nobody sees until the site is live. A startswith on '..' is not
+    # enough — 'fonts/../../app.py' passes it — so this is the containment
+    # check the download routes already use: resolve, then compare.
+    root = str(docs.resolve())
+    for ref in sorted({f for f in fetched if not _outbound([f]) and not f.startswith('data:')}):
+        target = (docs / ref.split('?')[0].split('#')[0]).resolve()
+        check('%s is served from docs/' % ref,
+              str(target).startswith(root) and target.is_file())
+    check('control: a reference climbing out of docs/ is caught',
+          not str((docs / 'fonts/../../app.py').resolve()).startswith(root),
+          'fonts/../../app.py -> outside')
+
+    # The two unicode-range lists are duplicated, not shared: the browser
+    # loading the page reads that file alone, and Pages never publishes
+    # static/. Re-subset the font and only one of the two would be updated.
+    css = (ROOT / 'static' / 'css' / 'style.css').read_text(encoding='utf-8')
+    rp, rc = _ranges(page), _ranges(css)
+    check('two @font-face blocks on each side', len(rp) == 2 and len(rc) == 2,
+          'page %d, stylesheet %d' % (len(rp), len(rc)))
+    check('the unicode ranges match the application', rp == rc,
+          'identical' if rp == rc else 'DRIFTED')
+    check('control: a drifted range is caught',
+          _ranges(page.replace('U+0329', 'U+0328', 1)) != rc, 'perturbed -> flagged')
+
+
 OFFLINE = [test_origin_guard, test_sec_fetch_site, test_sanitize,
            test_baseline_behaviour, test_deadlines, test_playlist_pushes_deadline,
            test_routing, test_photo_has_no_audio, test_playlist_partial_count,
            test_photo_strategy, test_cancel_route, test_instagram_cancellation,
-           test_cut_cancellation]
+           test_cut_cancellation, test_landing_page]
 ONLINE_ONLY = [test_radio_online, test_real_cancellation]
 
 
