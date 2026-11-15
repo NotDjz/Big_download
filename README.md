@@ -27,7 +27,9 @@ Windows SmartScreen will object: the binary is unsigned. Choose "More info", the
 
 ### Option 2: the installer (MSI)
 
-`pwsh ./build-msi.ps1` runs `build.bat`, then builds `dist\BigDownloader-<version>-x64.msi` with [WiX 7](https://wixtoolset.org) (`dotnet tool install -g wix`). Double-click it: it installs for your account only (no admin prompt) into `%LOCALAPPDATA%\Programs\BigDownloader` and adds Big Downloader to the Start Menu. Downloads go to the `downloads` folder there (the Library's folder button opens it). Uninstall it from Settings > Apps: your downloads and cookies stay.
+Download `BigDownloader-<version>-x64.msi` from the [latest release](https://github.com/NotDjz/Big_download/releases/latest) and double-click it: it installs for your account only (no admin prompt) into `%LOCALAPPDATA%\Programs\BigDownloader` and adds Big Downloader to the Start Menu. SmartScreen objects the same way, since it is unsigned too. Downloads go to the `downloads` folder there (the Library's folder button opens it). Uninstall it from Settings > Apps: your downloads and cookies stay.
+
+To build it yourself: `pwsh ./build-msi.ps1` runs `build.bat`, then builds `dist\BigDownloader-<version>-x64.msi` with [WiX 7](https://wixtoolset.org) (`dotnet tool install -g wix`).
 
 ### Option 3: from source
 
