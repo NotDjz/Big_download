@@ -1,0 +1,10 @@
+# LF everywhere, CRLF where cmd.exe needs it: a .bat saved with LF breaks on REM lines and labels.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.png binary
+*.ico binary
+*.woff2 binary
+*.exe binary
+*.zip binary
