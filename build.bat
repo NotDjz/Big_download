@@ -21,7 +21,7 @@ REM The exact versions the CI tested, each checked by hash. yt-dlp is frozen
 REM into the exe and can never update itself, and a stale one gets 403s: it is
 REM kept fresh by Dependabot bumping requirements.txt, not by an unpinned
 REM upgrade here.
-%PYTHON% -m pip install --require-hashes -r requirements-build.txt
+%PYTHON% -m pip install --require-hashes -r requirements.txt
 if errorlevel 1 (
     echo [ERROR] Could not install the pinned build dependencies
     pause
