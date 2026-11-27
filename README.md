@@ -83,7 +83,7 @@ py download_ffmpeg.py
 build.bat
 ```
 
-The executable lands in `dist/BigDownloader.exe`. The build installs the exact versions in `requirements-build.txt`, each checked by hash, and FFmpeg 8.1.1 checked by SHA-256. To change a dependency, edit the `.in` file and recompile the lock with `pip-compile --generate-hashes --allow-unsafe --strip-extras <name>.in` (Dependabot does it weekly).
+The executable lands in `dist/BigDownloader.exe`. The build installs the exact versions in `requirements.txt`, each checked by hash, and the FFmpeg build pinned in `download_ffmpeg.py`, checked by SHA-256. To change a dependency, edit `requirements.in` and recompile the lock with `pip-compile --generate-hashes --allow-unsafe --strip-extras requirements.in` (Dependabot does it weekly).
 
 Releases are not built by hand: pushing a `vX.Y.Z` tag with its `CHANGELOG.md` section runs `.github/workflows/release.yml`, and the owner approves the publication in GitHub.
 

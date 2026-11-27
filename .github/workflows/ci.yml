@@ -17,8 +17,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  # Only a PR's superseded runs are cancelled: on main, every merge commit keeps its own verdict (release.yml
+  # requires it on the tagged commit), and the weekly audit is never cut short by a push.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -73,9 +75,9 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install --require-hashes -r requirements-dev.txt
-      # The build lock is the runtime lock plus PyInstaller: everything the exe is made of. --strict fails on any
-      # package that could not be audited instead of skipping it.
-      - run: python -m pip_audit --strict --disable-pip --require-hashes -r requirements-build.txt
+      # The lock holds everything the exe is made of, PyInstaller included. --strict fails on any package that
+      # could not be audited instead of skipping it.
+      - run: python -m pip_audit --strict --disable-pip --require-hashes -r requirements.txt
 
   secrets:
     name: secrets
@@ -113,6 +115,8 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if [ -z "$BASE" ] || [ -z "${BASE//0/}" ]; then echo "No range to check."; exit 0; fi
+          # Otherwise git log fails inside the process substitution, the loop reads nothing and the job passes.
+          git rev-parse --verify --quiet "$BASE^{commit}" > /dev/null || { echo "::error::Base $BASE is not in the history"; exit 1; }
           bad=0
           while IFS= read -r subject; do
             if ! printf '%s' "$subject" | grep -Eq '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9 ._/-]+\))?!?: .+'; then
