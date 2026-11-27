@@ -125,7 +125,10 @@ cut_progress = {}
 MAX_VIDEO_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
 DOWNLOAD_TIMEOUT = 30 * 60  # 30 minutes per download
 MAX_DOWNLOADS_PER_MINUTE = 10
-CUT_TIMEOUT = 10 * 60  # 10 minutes per cut
+# Seconds a cut may go without progress. Not a total: a fixed 10-minute clock
+# killed every long clip, measured at 4x slower than real time on 1080p 240 fps.
+CUT_TIMEOUT = 120
+CUT_TIMEOUT_MSG = f'Timeout: FFmpeg made no progress for {CUT_TIMEOUT} s'
 SSE_GRACE = 60  # slack for the worker to abort before the SSE stream gives up
 TIMEOUT_MSG = f'Timeout: download took too long ({DOWNLOAD_TIMEOUT // 60} min max)'
 # Same reason as TIMEOUT_MSG: the message travels to the client, so it must not
@@ -1363,6 +1366,44 @@ def stream_file(category, filename):
     return jsonify({'error': 'File not found'}), 404
 
 
+def _watch_cut(entry, proc, timed_out):
+    """Kill FFmpeg once the cut's deadline passes, checked once a second.
+
+    On its own thread: the deadline used to be evaluated inside the read loop,
+    so a stuck FFmpeg that wrote no further line to stderr was never killed.
+    The reader pushes the deadline on progress; this only reads it, like the
+    SSE net.
+    """
+    while proc.poll() is None:
+        if time.time() > entry['deadline']:
+            timed_out.set()
+            _kill_quietly(proc)
+            return
+        time.sleep(1)
+
+
+def _pump_cut_progress(proc, entry, q, duration):
+    """Relay FFmpeg's out_time_us= lines as progress, pushing the deadline."""
+    last_us = -1
+    for line in proc.stderr:
+        if not line.startswith('out_time_us='):
+            continue
+        try:
+            us = int(line.split('=')[1].strip())
+        except ValueError:  # FFmpeg writes N/A before the first frame
+            continue
+        # Only an advancing timestamp counts: FFmpeg keeps reporting the same
+        # one while it is stuck.
+        if us > last_us:
+            last_us = us
+            entry['deadline'] = time.time() + CUT_TIMEOUT
+        pct = min(us / 1_000_000 / duration, 1.0) if duration > 0 else 0
+        # put_nowait: removing the entry in the finally orphans the queue as
+        # soon as the client leaves, and a blocking put then froze the worker
+        # (stderr no longer drained, cleanup never done) until the process died.
+        _put_progress(q, {'status': 'progress', 'percent': round(pct * 100, 1)})
+
+
 def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=None):
     """Run FFmpeg on a worker thread, reading progress off stderr."""
     entry = cut_progress.get(cut_id)
@@ -1398,6 +1439,8 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
             '-ss', str(start),
             '-i', str(input_path),
             '-t', str(duration),
+            # About 7x faster than the default 'medium', measured on 1080p.
+            '-preset', 'veryfast',
             '-avoid_negative_ts', 'make_zero',
             '-progress', 'pipe:2',
             str(out_path),
@@ -1406,7 +1449,9 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
         # drained can block FFmpeg as soon as it fills up.
         proc = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            text=True, **_SUBPROCESS_FLAGS,
+            # Not the locale codec: cp1252 choked on UTF-8 metadata in the
+            # banner, and the error path deleted the source mid-cut.
+            text=True, encoding='utf-8', errors='replace', **_SUBPROCESS_FLAGS,
         )
         # Published so /cancel can kill it. Unlike yt-dlp, FFmpeg is a
         # subprocess: stopping it is immediate and certain.
@@ -1417,42 +1462,20 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
         if entry.get('cancelled'):
             _kill_quietly(proc)
 
-        # A watchdog on a timer: the deadline used to be evaluated inside the
-        # read loop, so a stuck FFmpeg that writes no further line to stderr was
-        # never killed.
         timed_out = threading.Event()
-
-        def _kill_stalled():
-            timed_out.set()
-            _kill_quietly(proc)
-
-        watchdog = threading.Timer(CUT_TIMEOUT, _kill_stalled)
-        watchdog.daemon = True
-        watchdog.start()
-
-        try:
-            for line in proc.stderr:
-                if line.startswith('out_time_us='):
-                    try:
-                        us = int(line.split('=')[1].strip())
-                        pct = min(us / 1_000_000 / duration, 1.0) if duration > 0 else 0
-                        # put_nowait: removing the entry in the finally
-                        # orphans the queue as soon as the client leaves, and a
-                        # blocking put then froze the worker (stderr no longer
-                        # drained, cleanup never done) until the process died.
-                        _put_progress(q, {'status': 'progress', 'percent': round(pct * 100, 1)})
-                    except (ValueError, ZeroDivisionError):
-                        pass
-            proc.wait()
-        finally:
-            watchdog.cancel()
+        threading.Thread(target=_watch_cut, args=(entry, proc, timed_out),
+                         daemon=True).start()
+        _pump_cut_progress(proc, entry, q, duration)
+        proc.wait()
 
         if entry.get('cancelled'):
             fail('Cut stopped', status='cancelled')
             return
 
-        if timed_out.is_set():
-            fail('Timeout: the cut took too long')
+        # returncode too: FFmpeg may finish on its own between the watchdog's
+        # poll and its kill, and a finished cut must not be thrown away.
+        if timed_out.is_set() and proc.returncode != 0:
+            fail(CUT_TIMEOUT_MSG)
             return
 
         if proc.returncode != 0:

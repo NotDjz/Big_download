@@ -634,7 +634,9 @@ def _cut_run(mode, template):
 
     cut_id = 'testcut'
     q = queue.Queue(maxsize=100)
-    app.cut_progress[cut_id] = {'queue': q, 'cancelled': False}
+    # A deadline, as the route sets one: the watchdog reads it.
+    app.cut_progress[cut_id] = {'queue': q, 'cancelled': False,
+                                'deadline': time.time() + app.CUT_TIMEOUT}
     # In error mode: an extension FFmpeg refuses, so it exits non-zero.
     target = scratch / ('output.mp4' if mode == 'cancel' else 'output.unknownext')
 
@@ -687,6 +689,90 @@ def test_cut_cancellation():
     check("control: terminal state = error", status == 'error', 'got: %s' % status)
     check('control: the source is deleted', source is False)
     shutil.rmtree(workshop, ignore_errors=True)
+
+
+# Stand-ins for FFmpeg, run with the real interpreter: argv[1] is the output path.
+_FFMPEG_SLOW = r'''
+import sys, time
+print('out_time_us=N/A', file=sys.stderr, flush=True)  # as the real one does at first
+for i in range(10):
+    print('out_time_us=%d' % ((i + 1) * 1000000), file=sys.stderr, flush=True)
+    time.sleep(0.3)
+open(sys.argv[1], 'wb').write(b'x')
+'''
+# Still talking, but out_time_us never moves: that is a stall too.
+_FFMPEG_FROZEN = r'''
+import sys, time
+for _ in range(30):
+    print('out_time_us=1000000', file=sys.stderr, flush=True)
+    time.sleep(0.3)
+'''
+# FFmpeg's banner echoes metadata as UTF-8; 0x9D is undefined in cp1252.
+_FFMPEG_UTF8 = r'''
+import sys
+sys.stderr.buffer.write(b'  title : \xe2\x80\x9d\n')
+sys.stderr.flush()
+print('out_time_us=10000000', file=sys.stderr, flush=True)
+open(sys.argv[1], 'wb').write(b'x')
+'''
+_FFMPEG_SILENT = r'''
+import sys, time
+print('out_time_us=1000000', file=sys.stderr, flush=True)
+time.sleep(10)
+'''
+
+
+def _stall_run(script):
+    """One cut through a fake FFmpeg, with CUT_TIMEOUT shrunk to 1 s."""
+    real_popen = subprocess.Popen
+
+    def fake_popen(cmd, **kw):
+        return real_popen([sys.executable, '-c', script, cmd[-1]], **kw)
+
+    scratch = Path(tempfile.mkdtemp(prefix='cut-stall-'))
+    cut_id = 'stallcut'
+    q = queue.Queue(maxsize=100)
+    started = time.time()
+    entry = {'queue': q, 'cancelled': False, 'deadline': started + 1}
+    app.cut_progress[cut_id] = entry
+    with patched(CUT_TIMEOUT=1), patched_on(app.subprocess, Popen=fake_popen):
+        t = threading.Thread(target=app._run_ffmpeg_cut,
+                             args=(cut_id, scratch / 'in.mp4', scratch / 'out.mp4', 0, 10),
+                             daemon=True)
+        t.start()
+        t.join(timeout=20)
+    elapsed = time.time() - started
+    ev = []
+    while not q.empty():
+        ev.append(q.get_nowait())
+    final = next((e for e in ev if e.get('status') in app.TERMINAL_STATUSES), {})
+    shutil.rmtree(scratch, ignore_errors=True)
+    return final, entry['deadline'] - started, elapsed
+
+
+def test_cut_stall_timeout():
+    section('Cut: the timeout catches a stall, not a long clip')
+    # The bug: a fixed 10-minute wall clock killed every cut that took longer,
+    # however well it was progressing. A 3 s cut with a 1 s limit must finish.
+    final, pushed, _ = _stall_run(_FFMPEG_SLOW)
+    check('a slow cut that progresses completes', final.get('status') == 'complete',
+          'got: %s' % final)
+    check('progress pushes the deadline forward', pushed > 2, '+%.1f s' % pushed)
+    # A decode error used to land in `except Exception`, whose fail() deleted
+    # the user's source while FFmpeg was still running.
+    final, _, _ = _stall_run(_FFMPEG_UTF8)
+    check('non-cp1252 bytes on stderr do not fail the cut',
+          final.get('status') == 'complete', 'got: %s' % final)
+
+    # Controls: without them, a watchdog gone inert would pass the test above.
+    final, _, elapsed = _stall_run(_FFMPEG_SILENT)
+    check('control: a silent FFmpeg is killed', final.get('status') == 'error'
+          and 'Timeout' in final.get('message', ''), 'got: %s' % final)
+    check('control: killed promptly', elapsed < 5, '%.1f s' % elapsed)
+    final, _, elapsed = _stall_run(_FFMPEG_FROZEN)
+    check('control: a frozen out_time is killed', final.get('status') == 'error'
+          and 'Timeout' in final.get('message', ''), 'got: %s' % final)
+    check('control: frozen killed promptly', elapsed < 5, '%.1f s' % elapsed)
 
 
 # ===================================================== network (--online)
@@ -919,7 +1005,7 @@ OFFLINE = [test_origin_guard, test_sec_fetch_site, test_sanitize,
            test_baseline_behaviour, test_deadlines, test_playlist_pushes_deadline,
            test_routing, test_photo_has_no_audio, test_playlist_partial_count,
            test_photo_strategy, test_cancel_route, test_instagram_cancellation,
-           test_cut_cancellation, test_landing_page]
+           test_cut_cancellation, test_cut_stall_timeout, test_landing_page]
 ONLINE_ONLY = [test_radio_online, test_real_cancellation]
 
 
