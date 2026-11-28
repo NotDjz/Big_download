@@ -13,8 +13,12 @@ Two rules, each born of an incident:
   runs the same code twice, once with the mechanism and once without. If both
   pass, the test is not measuring what it claims to measure.
 
-Monkeypatches are restored after every section: they apply to the `app` module
-itself, so without that the order of the tests would become load-bearing.
+Monkeypatches are restored after every section, or the order of the tests would
+become load-bearing. Patch the module that READS the name: since app.py was split
+into bigdl/, a name imported into a module is that module's own binding, so
+patching it on `app` changes nothing the code under test sees, silently.
+`patched(...)` is for what still lives in app.py; use `patched_on(<module>, ...)`
+for the rest (the stall test patches CUT_TIMEOUT on bigdl.cut.ffmpeg).
 """
 
 import ast
@@ -986,7 +990,9 @@ def _stall_run(script):
     return final, entry["deadline"] - started, elapsed
 
 
-# Standard-library modules a rule may not use either: they reach a process, the network, a thread or the clock.
+# Standard-library modules a rule may not use either: they reach a process, the disk, the network, a thread, the
+# clock, the interpreter or another module by name. `os` is among them: `from os.path import ...` is the one way in,
+# since it brings path arithmetic without os.remove or os.system.
 _RULE_IO = {
     "subprocess",
     "socket",
@@ -997,6 +1003,12 @@ _RULE_IO = {
     "time",
     "tempfile",
     "asyncio",
+    "os",
+    "io",
+    "pathlib",
+    "glob",
+    "importlib",
+    "sys",
 }
 
 
@@ -1008,13 +1020,20 @@ def _rule_violations(path):
         if isinstance(node, ast.Import):
             names = [a.name for a in node.names]
         elif isinstance(node, ast.ImportFrom):
-            names = [node.module or ""]
+            if (
+                node.level
+            ):  # relative: inside bigdl, so only another rules module may be named
+                names = ["bigdl." + (node.module or "")]
+            elif node.module == "os.path":
+                continue
+            else:
+                names = [node.module or ""]
         else:
             continue
         for name in names:
             top = name.split(".")[0]
             if top == "bigdl":
-                if not name.endswith(".rules"):
+                if not name.endswith("rules"):
                     bad.append(
                         name
                     )  # a rule leaning on an adapter, a route or the config

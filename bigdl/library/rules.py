@@ -1,7 +1,7 @@
 """The library's rules, with no I/O: which names are safe to put in a folder."""
 
-import os
 import re
+from os.path import splitext
 
 
 def sanitize_filename(filename):
@@ -18,6 +18,6 @@ def sanitize_filename(filename):
     if not filename:
         filename = "_"
     if len(filename) > 200:
-        name, ext = os.path.splitext(filename)
+        name, ext = splitext(filename)
         filename = name[:200] + ext
     return filename
