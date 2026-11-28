@@ -1,0 +1,14 @@
+# Edit this file, never requirements.txt: that is the lock pip-compile writes from it, with a hash per file.
+# One lock for running, testing and building, so CI tests exactly what the exe bundles.
+flask>=3.1.2
+yt-dlp>=2026.8.19
+requests>=2.32.5
+Pillow>=10.0.0
+pywebview>=5.0
+pyinstaller
+
+# Windows-only dependencies of pywebview and PyInstaller, named here so the lock comes out the same whatever OS
+# compiles it: Dependabot recompiles on Linux, where their sys_platform markers would drop them.
+pythonnet
+pefile
+pywin32-ctypes

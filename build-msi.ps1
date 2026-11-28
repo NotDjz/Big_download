@@ -1,6 +1,6 @@
 #Requires -Version 7
 # Builds dist\BigDownloader.exe with build.bat, then a per-user installer:
-# dist\BigDownloader-<version>-x64.msi. Needs WiX 7 (dotnet tool install -g wix). The version is the
+# dist\BigDownloader-<version>-x64.msi. Needs WiX 7 (pwsh ./scripts/install-wix.ps1, checked by hash). The version is the
 # latest tag unless given.
 param([string]$Version)
 $ErrorActionPreference = 'Stop'

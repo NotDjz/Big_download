@@ -1,0 +1,126 @@
+name: CI
+
+# Every push and pull request: nothing reaches main with a broken test, a broken interface, a known-vulnerable
+# dependency, a leaked secret or a free-form commit message.
+# No pull_request_target or workflow_run: a fork's code never runs with secrets or write access.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * 1" # Monday 03:00 UTC: a fresh advisory audit of the pinned dependencies
+  workflow_dispatch:
+
+# Read-only token for every job; nothing here writes to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  # Only a PR's superseded runs are cancelled: on main, every merge commit keeps its own verdict (release.yml
+  # requires it on the tagged commit), and the weekly audit is never cut short by a push.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  tests:
+    name: tests
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      # Exact versions, each checked by hash: what the release bundles.
+      - run: python -m pip install --require-hashes -r requirements.txt
+      # The pinned FFmpeg, checked by SHA-256 before extraction: the cut tests run the real one.
+      - run: python download_ffmpeg.py
+      # Offline: the --online sections reach YouTube, which a CI runner cannot be trusted to.
+      - run: python tests/server_tests.py
+
+  ui:
+    name: ui
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      # Node 22+: the smoke test drives Chrome over CDP with the global WebSocket.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - run: python -m pip install --require-hashes -r requirements.txt
+      - run: python download_ffmpeg.py
+      # The smoke test needs a file in the library, and a cut long enough to be stopped mid-way.
+      - run: |
+          New-Item -ItemType Directory -Force downloads/Videos | Out-Null
+          ./ffmpeg.exe -v error -f lavfi -i testsrc=size=1280x720:rate=30 -t 40 -c:v libx264 -preset ultrafast downloads/Videos/sample.mp4
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - run: python tests/run_ui_smoke.py
+
+  audit:
+    name: audit
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --require-hashes -r requirements-dev.txt
+      # The lock holds everything the exe is made of, PyInstaller included. --strict fails on any package that
+      # could not be audited instead of skipping it.
+      - run: python -m pip_audit --strict --disable-pip --require-hashes -r requirements.txt
+
+  secrets:
+    name: secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The whole history: a secret removed by a later commit is still in the earlier ones.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # gitleaks pinned by version and by the SHA-256 GitHub publishes for the asset.
+      - run: |
+          curl -fsSL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          ./gitleaks git --redact --verbose .
+
+  commits:
+    name: commits
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      # Conventional Commits for every commit this push or pull request brings. Earlier history predates the rule.
+      - env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ -z "$BASE" ] || [ -z "${BASE//0/}" ]; then echo "No range to check."; exit 0; fi
+          # Otherwise git log fails inside the process substitution, the loop reads nothing and the job passes.
+          git rev-parse --verify --quiet "$BASE^{commit}" > /dev/null || { echo "::error::Base $BASE is not in the history"; exit 1; }
+          bad=0
+          while IFS= read -r subject; do
+            if ! printf '%s' "$subject" | grep -Eq '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9 ._/-]+\))?!?: .+'; then
+              echo "::error::Not a Conventional Commit: $subject"; bad=1
+            fi
+          done < <(git log --no-merges --format=%s "$BASE..$HEAD")
+          exit $bad
