@@ -25,11 +25,13 @@ Download `BigDownloader.exe` from the [latest release](https://github.com/NotDjz
 
 Windows SmartScreen will object: the binary is unsigned. Choose "More info", then "Run anyway". What the executable does to your machine is laid out on [the project page](https://notdjz.github.io/Big_download/).
 
+Unsigned does not mean unverifiable: from v2.3.1 on, every release is built by GitHub Actions from its tag, with a provenance attestation. `gh attestation verify BigDownloader.exe -R NotDjz/Big_download` proves the file you downloaded came out of that build, from this repository's code.
+
 ### Option 2: the installer (MSI)
 
 Download `BigDownloader-<version>-x64.msi` from the [latest release](https://github.com/NotDjz/Big_download/releases/latest) and double-click it: it installs for your account only (no admin prompt) into `%LOCALAPPDATA%\Programs\BigDownloader` and adds Big Downloader to the Start Menu. SmartScreen objects the same way, since it is unsigned too. Downloads go to the `downloads` folder there (the Library's folder button opens it). Uninstall it from Settings > Apps: your downloads and cookies stay.
 
-To build it yourself: `pwsh ./build-msi.ps1` runs `build.bat`, then builds `dist\BigDownloader-<version>-x64.msi` with [WiX 7](https://wixtoolset.org) (`dotnet tool install -g wix`).
+To build it yourself: `pwsh ./build-msi.ps1` runs `build.bat`, then builds `dist\BigDownloader-<version>-x64.msi` with [WiX 7](https://wixtoolset.org) (`pwsh ./scripts/install-wix.ps1` installs it, checked by hash).
 
 ### Option 3: from source
 
@@ -81,7 +83,9 @@ py download_ffmpeg.py
 build.bat
 ```
 
-The executable lands in `dist/BigDownloader.exe`.
+The executable lands in `dist/BigDownloader.exe`. The build installs the exact versions in `requirements.txt`, each checked by hash, and the FFmpeg build pinned in `download_ffmpeg.py`, checked by SHA-256. To change a dependency, edit `requirements.in` and recompile the lock with `pip-compile --generate-hashes --allow-unsafe --strip-extras requirements.in` (Dependabot does it weekly).
+
+Releases are not built by hand: pushing a `vX.Y.Z` tag with its `CHANGELOG.md` section runs `.github/workflows/release.yml`, and the owner approves the publication in GitHub.
 
 Distribute that file and nothing else. `dist/` is also where a portable run writes its own `downloads/`, `temp_uploads/` and `cookies.txt` — sharing the folder would share your Instagram session.
 

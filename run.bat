@@ -14,14 +14,15 @@ if not exist "venv\Scripts\activate.bat" (
 REM Activate it
 call venv\Scripts\activate.bat
 
-REM Update yt-dlp on every launch. Platforms tighten their protections
-REM regularly and a stale yt-dlp fails with a 403 that explains nothing.
-echo [UPDATE] Updating yt-dlp...
-pip install --upgrade yt-dlp >nul 2>nul
+REM Sync with the lock on every launch: the versions CI tested and the exe
+REM bundles, not whatever PyPI serves today. A stale yt-dlp fails with a 403
+REM that explains nothing; Dependabot bumps it in requirements.txt weekly.
+echo [UPDATE] Syncing dependencies with requirements.txt...
+pip install --require-hashes -r requirements.txt >nul 2>nul
 if errorlevel 1 (
-    echo [WARNING] Could not update. Carrying on with the current version.
+    echo [WARNING] Could not sync. Carrying on with the current versions.
 ) else (
-    echo [OK] yt-dlp up to date
+    echo [OK] Dependencies match the lock
 )
 echo.
 

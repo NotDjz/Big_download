@@ -5,8 +5,11 @@ echo       BUILDING BIG DOWNLOADER
 echo   ======================================
 echo.
 
+REM The interpreter: py here, the one setup-python installed in CI (PYTHON=python).
+if not defined PYTHON set PYTHON=py
+
 REM Fetch FFmpeg if it is not already here
-py download_ffmpeg.py
+%PYTHON% download_ffmpeg.py
 if errorlevel 1 (
     echo [ERROR] Could not download FFmpeg
     pause
@@ -14,16 +17,19 @@ if errorlevel 1 (
 )
 echo.
 
-REM Install PyInstaller
-py -m pip install pyinstaller
-
-REM yt-dlp is frozen into the exe and can never update itself: a binary built
-REM on an old version starts getting 403s as soon as a platform tightens its
-REM protections.
-py -m pip install --upgrade yt-dlp
+REM The exact versions the CI tested, each checked by hash. yt-dlp is frozen
+REM into the exe and can never update itself, and a stale one gets 403s: it is
+REM kept fresh by Dependabot bumping requirements.txt, not by an unpinned
+REM upgrade here.
+%PYTHON% -m pip install --require-hashes -r requirements.txt
+if errorlevel 1 (
+    echo [ERROR] Could not install the pinned build dependencies
+    pause
+    exit /b 1
+)
 
 REM Build
-py -m PyInstaller --noconfirm --onefile --windowed --name BigDownloader ^
+%PYTHON% -m PyInstaller --noconfirm --onefile --windowed --name BigDownloader ^
     --icon "icon.ico" ^
     --add-data "templates;templates" ^
     --add-data "static;static" ^
