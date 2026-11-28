@@ -1,12 +1,9 @@
 import json
-import logging
-import mimetypes
 import os
 import platform
 import queue
 import re
 import shutil
-import stat
 import subprocess
 import sys
 import threading
@@ -18,19 +15,50 @@ from urllib.parse import parse_qs, urlparse
 import requests
 import webview
 import yt_dlp
-from flask import Flask, Response, jsonify, render_template, request, send_file
+from flask import Flask, jsonify, render_template, request, send_file
 from PIL import Image
 
-_SUBPROCESS_FLAGS = {}
-if platform.system() == "Windows":
-    _SUBPROCESS_FLAGS["creationflags"] = subprocess.CREATE_NO_WINDOW
-
-if getattr(sys, "frozen", False):
-    BUNDLE_DIR = Path(sys._MEIPASS)
-    BASE_DIR = Path(sys.executable).parent
-else:
-    BUNDLE_DIR = Path(__file__).parent
-    BASE_DIR = BUNDLE_DIR
+from bigdl.config import (
+    _SUBPROCESS_FLAGS,
+    BASE_DIR,
+    BUNDLE_DIR,
+    CANCEL_MSG,
+    CUT_TIMEOUT,
+    CUT_TIMEOUT_MSG,
+    DOWNLOAD_FOLDER,
+    DOWNLOAD_TIMEOUT,
+    EXPLORER,
+    FFMPEG_DIR,
+    FFMPEG_PATH,
+    FFPROBE_PATH,
+    MAX_VIDEO_SIZE,
+    MUSIC_FOLDER,
+    PHOTOS_FOLDER,
+    PLAYLIST_SCAN,
+    PORT,
+    SSE_GRACE,
+    TEMP_FOLDER,
+    TIMEOUT_MSG,
+    VIDEOS_FOLDER,
+    WORK_FOLDER,
+    log,
+)
+from bigdl.jobs import (
+    DownloadAborted,
+    _kill_quietly,
+    _put_final,
+    _put_progress,
+    _sweep_old_files,
+    cut_progress,
+    download_progress,
+)
+from bigdl.web import (
+    _rate_limit_check,
+    _reject_foreign_origin,
+    _security_headers,
+    _sse_response,
+    request_entity_too_large,
+)
 
 app = Flask(
     __name__,
@@ -39,181 +67,10 @@ app = Flask(
 )
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024  # 2 GB
 
-# Windows reads MIME types from the registry, where .js can come back as
-# text/plain and .woff2 is unknown entirely. With X-Content-Type-Options:
-# nosniff the browser would then refuse the script and the interface would sit
-# there dead. Pin the types we depend on.
-for _ext, _mime in (
-    (".woff2", "font/woff2"),
-    (".js", "text/javascript"),
-    (".css", "text/css"),
-    (".png", "image/png"),
-):
-    mimetypes.add_type(_mime, _ext)
-
-# An absolute path rather than the bare name: CreateProcess searches the
-# image's own directory first, and that is the very directory where the
-# portable exe writes downloads/, temp_uploads/ and cookies.txt. An explorer.exe
-# dropped there would run in our place. Planting it already requires code
-# execution under the same identity, so this is not a hole being closed, just
-# two lines of hardening.
-EXPLORER = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "explorer.exe")
-
-
-@app.errorhandler(413)
-def request_entity_too_large(e):
-    return jsonify({"error": "File too large (2 GB max)"}), 413
-
-
-# The server listens on loopback, but any web page open on the machine can
-# reach it. Checking Host blocks DNS rebinding (an attacker domain repointed at
-# 127.0.0.1 would otherwise become same-origin and could list, exfiltrate and
-# delete the downloads); checking Origin blocks multipart POSTs and the
-# side-effecting GETs a third-party page could fire.
-PORT = 5555
-ALLOWED_HOSTS = frozenset(f"{h}:{PORT}" for h in ("127.0.0.1", "localhost"))
-ALLOWED_ORIGINS = frozenset(f"http://{h}" for h in ALLOWED_HOSTS)
-
-
-# 'none' is a top-level navigation: it is what the pywebview window sends when
-# it opens the app. Excluding it would lock the application out of itself.
-ALLOWED_FETCH_SITES = frozenset(("same-origin", "none"))
-
-
-@app.before_request
-def _reject_foreign_origin():
-    if request.host not in ALLOWED_HOSTS:
-        return jsonify({"error": "Host not allowed"}), 403
-    origin = request.headers.get("Origin")
-    if origin is not None:
-        if origin not in ALLOWED_ORIGINS:
-            return jsonify({"error": "Origin not allowed"}), 403
-        return None
-    # With no Origin there is nothing to conclude from: browsers omit it on a
-    # no-cors GET, so a <video src="http://127.0.0.1:5555/stream/..."> on a
-    # third-party page walked through the guard and served as an oracle on which
-    # files had been downloaded. Sec-Fetch-Site, on the other hand, is always
-    # sent.
-    site = request.headers.get("Sec-Fetch-Site")
-    if site is not None and site not in ALLOWED_FETCH_SITES:
-        return jsonify({"error": "Origin not allowed"}), 403
-    return None
-
-
-@app.after_request
-def _security_headers(resp):
-    # frame-ancestors closes clickjacking: framed inside a third-party page,
-    # the app fired its own deletions same-origin, two clicks in.
-    resp.headers["X-Frame-Options"] = "DENY"
-    resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers.setdefault(
-        "Content-Security-Policy",
-        "; ".join(
-            (
-                "default-src 'self'",
-                "img-src 'self' https: data:",  # thumbnails served by the platforms
-                "media-src 'self'",
-                "frame-ancestors 'none'",
-            )
-        ),
-    )
-    return resp
-
-
-# Structured logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
-log = logging.getLogger("bigdl")
-
-# Download progress registry (download_id -> {queue, start_time, deadline, cancelled})
-download_progress = {}
-# Cut progress registry (cut_id -> {queue, deadline, cancelled, proc})
-cut_progress = {}
-
-# Configuration
-MAX_VIDEO_SIZE = 5 * 1024 * 1024 * 1024  # 5 GB
-DOWNLOAD_TIMEOUT = 30 * 60  # 30 minutes per download
-MAX_DOWNLOADS_PER_MINUTE = 10
-# Seconds a cut may go without progress. Not a total: a fixed 10-minute clock
-# killed every long clip, measured at 4x slower than real time on 1080p 240 fps.
-CUT_TIMEOUT = 120
-CUT_TIMEOUT_MSG = f"Timeout: FFmpeg made no progress for {CUT_TIMEOUT} s"
-SSE_GRACE = 60  # slack for the worker to abort before the SSE stream gives up
-TIMEOUT_MSG = f"Timeout: download took too long ({DOWNLOAD_TIMEOUT // 60} min max)"
-# Same reason as TIMEOUT_MSG: the message travels to the client, so it must not
-# exist as two literals that drift apart the first time one is reworded.
-CANCEL_MSG = "Download stopped"
-# How many videos /get-info enumerates to describe a playlist. It shows none of
-# them: the count comes from playlist_count, which the page states without
-# anyone having to page through the list. This cap exists only as a fallback
-# when that field is missing, and above all it keeps a synchronous route from
-# paging to the end. Measured: 1593 videos in 7.3 s unbounded, 1.0 s with it.
-PLAYLIST_SCAN = 50
-
-
-# The terminal states: _put_final publishes them and _sse_response stops on
-# them. This was written out twice, and 'cancelled' had been added to only one
-# of the two places.
-TERMINAL_STATUSES = ("complete", "error", "cancelled")
-
-
-class DownloadAborted(Exception):
-    """The job must stop. `status` and `message` are what _put_final publishes.
-
-    One class, with the reason carried as data rather than as a subtype. The two
-    reasons that exist today, deadline exceeded and user-requested stop, differ
-    only in those two fields; a hierarchy separating them forced one except per
-    subtype, plus a third laid down "just in case" that no raise could reach.
-    Here a future reason adds nothing: it passes a status and a message.
-
-    One class is also what the two loops that re-raise it want (playlist,
-    Instagram photos): each sits just above an except Exception that swallows
-    and continues, and an incomplete tuple of subtypes would send them off
-    again in silence.
-    """
-
-    def __init__(self, status, message):
-        super().__init__(message)
-        self.status = status
-        self.message = message
-
-
-DOWNLOAD_FOLDER = BASE_DIR / "downloads"
-
-if getattr(sys, "frozen", False) and platform.system() == "Windows":
-    FFMPEG_PATH = str(BUNDLE_DIR / "ffmpeg.exe")
-    FFPROBE_PATH = str(BUNDLE_DIR / "ffprobe.exe")
-    FFMPEG_DIR = BUNDLE_DIR
-elif (BASE_DIR / "ffmpeg.exe").exists():
-    FFMPEG_PATH = str(BASE_DIR / "ffmpeg.exe")
-    FFPROBE_PATH = str(BASE_DIR / "ffprobe.exe")
-    FFMPEG_DIR = BASE_DIR
-else:
-    FFMPEG_PATH = "ffmpeg"
-    FFPROBE_PATH = "ffprobe"
-    FFMPEG_DIR = None  # FFmpeg comes from the system PATH
-DOWNLOAD_FOLDER.mkdir(exist_ok=True)
-
-# Rate limiting
-_request_times = []
-_rate_lock = threading.Lock()
-
-# One folder per media type
-VIDEOS_FOLDER = DOWNLOAD_FOLDER / "Videos"
-MUSIC_FOLDER = DOWNLOAD_FOLDER / "Music"
-PHOTOS_FOLDER = DOWNLOAD_FOLDER / "Photos"
-# Scratch space for downloads: one subfolder per job, destroyed when it ends.
-# On the same volume as the output folders so that yt-dlp's final move stays a
-# rename rather than a copy.
-WORK_FOLDER = BASE_DIR / ".work"
-
-VIDEOS_FOLDER.mkdir(exist_ok=True)
-MUSIC_FOLDER.mkdir(exist_ok=True)
-PHOTOS_FOLDER.mkdir(exist_ok=True)
-WORK_FOLDER.mkdir(exist_ok=True)
+# The HTTP edge lives in bigdl/web.py; registered here, on the one Flask app.
+app.errorhandler(413)(request_entity_too_large)
+app.before_request(_reject_foreign_origin)
+app.after_request(_security_headers)
 
 
 def _next_versioned_name(folder, stem, ext):
@@ -706,75 +563,6 @@ def _download_instagram_images(q, url, entry):
         )
 
 
-def _kill_quietly(proc):
-    """Kill a process quietly: it may have finished on its own meanwhile."""
-    if not proc:
-        return
-    try:
-        proc.kill()
-    except OSError:
-        pass
-
-
-def _put_progress(q, event):
-    """Publish a progress event, dropping it if the queue is full.
-
-    A bare put propagated into the generic handler and aborted the whole
-    playlist with an empty message, since str(queue.Full()) is ''.
-    """
-    try:
-        q.put_nowait(event)
-    except queue.Full:
-        pass
-
-
-def _put_final(q, event):
-    """Publish a terminal event, even when the queue is full.
-
-    put_nowait raises queue.Full when the client is not draining; the exception
-    propagated into the generic error handler and, for Instagram, wrongly
-    triggered the photo fallback.
-    """
-    try:
-        q.put_nowait(event)
-        return
-    except queue.Full:
-        pass
-    try:
-        q.get_nowait()  # single producer: freeing one slot is enough
-    except queue.Empty:
-        pass
-    try:
-        q.put_nowait(event)
-    except queue.Full:
-        log.warning("Terminal event not delivered (queue saturated)")
-
-
-def _sweep_old_files(folder, max_age):
-    """Delete entries in a folder older than max_age.
-
-    Files and directories alike: download threads are daemons, so closing the
-    window mid-download kills the worker without running its finally and leaves
-    its work directory behind.
-
-    The age guard is the subtle part: these folders are shared, and an
-    unconditional sweep erased the .part of a download still in flight, making
-    it fail.
-    """
-    cutoff = time.time() - max_age
-    for f in folder.glob("*"):
-        try:
-            st = f.stat()
-            if st.st_mtime >= cutoff:
-                continue
-            if stat.S_ISDIR(st.st_mode):
-                shutil.rmtree(f, ignore_errors=True)
-            else:
-                f.unlink()
-        except OSError:
-            pass
-
-
 def _check_filesize(file_path):
     """Check a downloaded file's size, deleting it if it exceeds the limit."""
     if file_path.exists():
@@ -1015,17 +803,6 @@ def _run_playlist_download(q, url, quality, entry, job_tmp):
     )
 
 
-def _rate_limit_check():
-    """Rate limiting. True when the request is allowed through."""
-    now = time.time()
-    with _rate_lock:
-        _request_times[:] = [t for t in _request_times if now - t < 60]
-        if len(_request_times) >= MAX_DOWNLOADS_PER_MINUTE:
-            return False
-        _request_times.append(now)
-        return True
-
-
 @app.route("/start-download", methods=["POST"])
 def start_download():
     """Start a download and hand back the id its progress stream will use."""
@@ -1078,47 +855,6 @@ def start_download():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-def _sse_response(registry, key, unknown_msg, poll, deadline_key=None):
-    """Drain a job's queue and serve it as Server-Sent Events.
-
-    The two streams, download and cut, were two copies: the leak fix had to be
-    written twice, and the copies had already drifted apart, with only the
-    download having been given a client-side net.
-    """
-
-    def generate():
-        entry = registry.get(key)
-        if not entry:
-            yield f"data: {json.dumps({'status': 'error', 'message': unknown_msg})}\n\n"
-            return
-        q = entry["queue"]
-        try:
-            while True:
-                # A safety net. The worker now aborts itself, through the
-                # yt-dlp hook or the FFmpeg watchdog; give it SSE_GRACE of head
-                # start, then free the client rather than leave it waiting.
-                if deadline_key and time.time() > entry[deadline_key] + SSE_GRACE:
-                    yield f"data: {json.dumps({'status': 'error', 'message': TIMEOUT_MSG})}\n\n"
-                    break
-                try:
-                    event = q.get(timeout=poll)
-                    yield f"data: {json.dumps(event)}\n\n"
-                    if event.get("status") in TERMINAL_STATUSES:
-                        break
-                except queue.Empty:
-                    yield f"data: {json.dumps({'status': 'heartbeat'})}\n\n"
-        finally:
-            # In a finally, otherwise a client disconnect (GeneratorExit)
-            # left the entry and its queue in memory for good.
-            registry.pop(key, None)
-
-    return Response(
-        generate(),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
 
 
 @app.route("/progress/<download_id>")
@@ -1632,10 +1368,6 @@ def cut_progress_stream(cut_id):
     return _sse_response(
         cut_progress, cut_id, "Unknown cut", poll=15, deadline_key="deadline"
     )
-
-
-TEMP_FOLDER = BASE_DIR / "temp_uploads"
-TEMP_FOLDER.mkdir(exist_ok=True)
 
 
 def _sweep_stale_partials():
