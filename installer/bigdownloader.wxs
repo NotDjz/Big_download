@@ -5,9 +5,11 @@
        cookies.txt beside its exe: Program Files would be read-only for it. -->
   <Package Id="NotDjz.BigDownloader" Name="Big Downloader" Manufacturer="NotDjz"
            Version="$(var.Version)" Scope="perUser">
-    <!-- afterInstallInitialize: the old version is removed inside the transaction, after CloseApplication below has
-         closed the running app, instead of before anything could close it. -->
-    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
+    <!-- Default schedule (afterInstallValidate): the old version is removed by its own uninstall sequence, which closes
+         the app itself once installed versions carry the CloseApplication below. Inside the transaction instead,
+         RemoveExistingProducts must be its first script action (error 2613, measured), so nothing could close the
+         app before it. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
@@ -21,10 +23,10 @@
     <Property Id="MSIDISABLERMRESTART" Value="1" />
     <util:CloseApplication Id="CloseBigDownloader" Target="BigDownloader.exe" CloseMessage="yes"
                            RebootPrompt="no" TerminateProcess="1" Timeout="5" />
-    <!-- Its default slot is before InstallFiles: after RemoveFiles on an uninstall, and after the old product is gone
-         on an upgrade. Moved to the start of the transaction. -->
+    <!-- Its default slot is before InstallFiles, which on an uninstall comes after RemoveFiles: too late. Moved to the
+         start of the transaction, before any file is removed or written. -->
     <InstallExecuteSequence>
-      <Custom Action="override Wix4CloseApplications_X64" Before="RemoveExistingProducts" />
+      <Custom Action="override Wix4CloseApplications_X64" After="InstallInitialize" />
     </InstallExecuteSequence>
 
     <StandardDirectory Id="LocalAppDataFolder">
