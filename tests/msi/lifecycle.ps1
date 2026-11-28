@@ -118,7 +118,8 @@ Step 'launch the app'
 $app = Launch
 Check 'app serves its page' (Serving) ($app.HasExited ? ('exited with 0x{0:X8}' -f $app.ExitCode) : '')
 $window = $false
-foreach ($i in 1..20) { if ([Win]::Visible('Big Downloader')) { $window = $true; break }; Start-Sleep -Milliseconds 500 }
+# Up to 30 s: the page answered in 3 s on a runner where WebView2 took over 10 s to show the window.
+foreach ($i in 1..60) { if ([Win]::Visible('Big Downloader')) { $window = $true; break }; Start-Sleep -Milliseconds 500 }
 Check 'window visible' $window
 Check 'library folders created beside the exe' (Test-Path "$dir\downloads\Videos")
 
