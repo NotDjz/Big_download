@@ -972,7 +972,7 @@ def test_landing_page():
 
     outside = _outbound(links)
     check('every outbound link goes to github.com',
-          bool(outside) and all(l.startswith('https://github.com/') for l in outside),
+          bool(outside) and all(link.startswith('https://github.com/') for link in outside),
           '%d link(s)' % len(outside))
 
     # Pages publishes docs/ and nothing else, so a reference climbing out of it

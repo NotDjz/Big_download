@@ -13,16 +13,16 @@ from urllib.parse import urlparse, parse_qs
 import requests
 import subprocess
 import platform
-
-_SUBPROCESS_FLAGS = {}
-if platform.system() == 'Windows':
-    _SUBPROCESS_FLAGS['creationflags'] = subprocess.CREATE_NO_WINDOW
 from PIL import Image
 import mimetypes
 import shutil
 import stat
 import sys
 import webview
+
+_SUBPROCESS_FLAGS = {}
+if platform.system() == 'Windows':
+    _SUBPROCESS_FLAGS['creationflags'] = subprocess.CREATE_NO_WINDOW
 
 if getattr(sys, 'frozen', False):
     BUNDLE_DIR = Path(sys._MEIPASS)
@@ -314,9 +314,9 @@ def detect_platform(url):
         'vimeo.com': 'vimeo'
     }
 
-    for domain_key, platform in platforms.items():
+    for domain_key, name in platforms.items():
         if domain_key in domain:
-            return platform
+            return name
 
     return 'unknown'
 
