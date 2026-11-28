@@ -84,6 +84,9 @@ function Serving {
     $false
 }
 function Kept { $cut -and (Test-Path $cut) -and (Test-Path $cookies) }
+# msiexec exits 0 even when a file in use was moved to C:\Config.Msi for deletion at reboot (measured before the
+# installer closed the app itself): the log is the only place that says so.
+function RebootOps($log) { @(Select-String -Path "$Out\$log" -Encoding unicode -Pattern 'Must reboot' -SimpleMatch).Count }
 # Each BigDownloader process still alive, described enough to tell the onefile bootloader (parent of the other,
 # no window) from the app (window, port 5555).
 function Leftovers {
@@ -147,6 +150,7 @@ if (Runs upgrade) {
 EnsureRunning 'before the upgrade'
 $code = Msi '/i' $New 'upgrade.log'
 Check 'upgrade with the app running exits 0 (no reboot)' ($code -eq 0) $code
+Check 'upgrade leaves nothing for deletion at reboot' ((RebootOps 'upgrade.log') -eq 0) (RebootOps 'upgrade.log')
 Start-Sleep -Seconds 10
 Check 'never two servers after the upgrade' ((Listeners) -le 1) (Listeners)
 $t = [Diagnostics.Stopwatch]::StartNew()
@@ -167,6 +171,7 @@ if (Runs uninstall) {
 EnsureRunning 'before the uninstall'
 $code = Msi '/x' $New 'uninstall.log'
 Check 'uninstall while running exits 0' ($code -eq 0) $code
+Check 'uninstall leaves nothing for deletion at reboot' ((RebootOps 'uninstall.log') -eq 0) (RebootOps 'uninstall.log')
 # Restart Manager closes the app's window; the onefile bootloader exits after its child, so the last process can
 # outlive msiexec by a moment (measured: one still there 3 s after). Waited for, timed, and named if it stays.
 $t = [Diagnostics.Stopwatch]::StartNew()
