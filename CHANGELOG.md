@@ -3,7 +3,7 @@
 Each version's section is its release notes: the release workflow publishes it as-is.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions: [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [2.3.3] - 2026-11-28
 
 ### Fixed
 - A failed cut deleted the uploaded file, so a single bad attempt meant uploading again. Now only a successful cut
