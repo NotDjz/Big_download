@@ -2,6 +2,10 @@
 
 import math
 
+# Ten days. With no known length nothing else bounded a time, and FFmpeg refused
+# 1e23 ("Invalid duration"); the cap also keeps fixed-point formatting short.
+MAX_SECONDS = 10 * 24 * 3600
+
 
 def parse_cut_bounds(start, end, media_duration=None):
     """Validate a cut's bounds from the client: ((start, end), None), or (None, the reason).
@@ -20,6 +24,11 @@ def parse_cut_bounds(start, end, media_duration=None):
         return None, "Times must be numbers"
     if not (math.isfinite(start) and math.isfinite(end)):
         return None, "Times must be finite numbers"
+    if max(start, end) > MAX_SECONDS:
+        return None, "Times are too large"
+    # Judged as FFmpeg will receive them, to the millisecond: 9.9999 passed as a
+    # start in a 10 s file and reached FFmpeg as "-ss 9.999 -t 0.000".
+    start, end = round(start, 3), round(end, 3)
     if start < 0:
         return None, "The start time cannot be negative"
     if end <= start:

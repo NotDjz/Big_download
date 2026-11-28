@@ -41,7 +41,11 @@ def _watch_cut(entry, proc, timed_out):
 
 
 def _pump_cut_progress(proc, entry, q, duration):
-    """Relay FFmpeg's progress lines, pushing the deadline when the cut advances."""
+    """Relay FFmpeg's progress lines, pushing the deadline when the cut advances.
+
+    Returns the furthest output time FFmpeg reported (-1 if none): 0 means it
+    wrote no frame, whatever file it left behind.
+    """
     last_us = -1
     for line in proc.stderr:
         progress = _cut_progress(line, last_us, duration)
@@ -54,6 +58,7 @@ def _pump_cut_progress(proc, entry, q, duration):
         # soon as the client leaves, and a blocking put then froze the worker
         # (stderr no longer drained, cleanup never done) until the process died.
         _put_progress(q, {"status": "progress", "percent": percent})
+    return last_us
 
 
 def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=None):
@@ -77,24 +82,20 @@ def _cut_with_ffmpeg(cut_id, input_path, out_path, start, duration, temp_cleanup
         return
     q = entry["queue"]
 
-    def fail(message, status="error", keep_source=False):
-        """Leaving with nothing to show: one place to clean up.
+    def fail(message, status="error"):
+        """Leaving with nothing to show: remove the partial output, KEEP the source.
 
-        A cancellation keeps the source file. Stopping a cut is precisely what
-        you do to redo it with different bounds: deleting the source answered
-        404 "source file not found" when relaunching, and killed the preview on
-        the way. The hourly temp_uploads/ sweep takes care of it instead. A cut
-        that wrote no output keeps it for the same reason: the bounds were at
-        fault, not the file.
+        Only a successful cut deletes the upload. A cancellation, an error, a
+        timeout or an empty output all keep it, for the user to cut again: the
+        cut failed, not the file. Deleting it on every failure turned each new
+        kind of bad input (NaN bounds, a start past the end, 1e-05 written as
+        such) into a lost upload, one guard at a time. The hourly temp_uploads/
+        sweep removes what nobody comes back for.
         """
-        keep = status == "cancelled" or keep_source
-        doomed = (out_path,) if keep else (out_path, temp_cleanup)
-        for path in doomed:
-            if path:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         _put_final(q, {"status": status, "message": message})
 
     try:
@@ -147,7 +148,7 @@ def _cut_with_ffmpeg(cut_id, input_path, out_path, start, duration, temp_cleanup
         threading.Thread(
             target=_watch_cut, args=(entry, proc, timed_out), daemon=True
         ).start()
-        _pump_cut_progress(proc, entry, q, duration)
+        furthest_us = _pump_cut_progress(proc, entry, q, duration)
         proc.wait()
 
         if entry.get("cancelled"):
@@ -166,8 +167,10 @@ def _cut_with_ffmpeg(cut_id, input_path, out_path, start, duration, temp_cleanup
 
         # FFmpeg can exit 0 having written nothing (a range past the end, after
         # seeking): stat() then raised FileNotFoundError, read as a missing FFmpeg.
-        if not out_path.is_file():
-            fail("FFmpeg wrote no output", keep_source=True)
+        # A header with no frame is no output either (measured: 262 bytes for
+        # -ss past the last frame), and FFmpeg says so by never moving out_time.
+        if furthest_us <= 0 or not out_path.is_file():
+            fail("FFmpeg wrote no output")
             return
 
         if temp_cleanup:

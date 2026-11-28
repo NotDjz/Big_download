@@ -23,6 +23,10 @@ from bigdl.web import _sse_response
 
 bp = Blueprint("cut", __name__)
 
+# temp_name -> the duration ffprobe measured at upload.
+# shortcut: one small entry per upload, never pruned; prune with the hourly temp sweep if uploads ever pile up.
+_upload_durations = {}
+
 
 def _next_versioned_name(folder, stem, ext, claimed=()):
     """Next free name: stem_v2.ext, stem_v3.ext, and so on, skipping paths in `claimed`.
@@ -92,6 +96,7 @@ def upload_for_cut():
 
     file_size = temp_path.stat().st_size
     duration = _get_media_duration(temp_path)
+    _upload_durations[temp_name] = duration
 
     if duration <= 0:
         temp_path.unlink(missing_ok=True)
@@ -146,9 +151,10 @@ def cut_uploaded():
     if not temp_path.exists():
         return jsonify({"error": "Source file not found"}), 404
 
-    # Against the file's own length (0 when ffprobe cannot tell: no clamp then).
+    # Against the length measured at upload; a second ffprobe ran synchronously on
+    # every click, with nothing to cancel while it hung. 0 if never measured: no clamp.
     bounds, error = parse_cut_bounds(
-        data.get("start", 0), end, _get_media_duration(temp_path)
+        data.get("start", 0), end, _upload_durations.get(safe_temp, 0)
     )
     if error:
         return jsonify({"error": error}), 400
@@ -172,10 +178,16 @@ def cut_uploaded():
         "deadline": time.time() + CUT_TIMEOUT,
         "cancelled": False,
     }
-    thread = threading.Thread(
-        target=_run_ffmpeg_cut,
-        args=(cut_id, temp_path, out_path, start, duration, temp_path),
-        daemon=True,
-    )
-    thread.start()
+    try:
+        threading.Thread(
+            target=_run_ffmpeg_cut,
+            args=(cut_id, temp_path, out_path, start, duration, temp_path),
+            daemon=True,
+        ).start()
+    except BaseException:
+        # The worker releases its claim; one that never started cannot.
+        with claim_lock:
+            claimed_outputs.discard(out_path)
+        cut_progress.pop(cut_id, None)
+        raise
     return jsonify({"cut_id": cut_id})
