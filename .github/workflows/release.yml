@@ -72,6 +72,16 @@ jobs:
       # WiX checked against nuget.org's published SHA-512 before use.
       - run: ./scripts/install-wix.ps1
       - run: ./build-msi.ps1 -Version ${{ steps.version.outputs.version }}
+      # The MSI about to be published goes through its whole life on this disposable runner first (ci.yml runs the
+      # same script phase by phase on every change).
+      - run: |
+          ./tests/msi/upgrade-pair.ps1 -Out $env:RUNNER_TEMP
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./ffmpeg.exe -v error -f lavfi -i testsrc=size=640x360:rate=30 -f lavfi -i sine -t 3 -c:v libx264 -preset ultrafast -c:a aac -shortest "$env:RUNNER_TEMP\sample.mp4"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: MSI lifecycle
+        timeout-minutes: 20
+        run: ./tests/msi/lifecycle.ps1 -Phase all -Old "$env:RUNNER_TEMP\old.msi" -New "$env:RUNNER_TEMP\new.msi" -Sample "$env:RUNNER_TEMP\sample.mp4" -Out "$env:RUNNER_TEMP\lifecycle"
       - env:
           MSI: ${{ steps.version.outputs.msi }}
         run: |
