@@ -48,6 +48,7 @@ from bigdl.cut import rules as cut_rules  # noqa: E402
 from bigdl.download import instagram, ytdlp  # noqa: E402
 from bigdl.download import routes as dl_routes  # noqa: E402
 from bigdl.download import rules as dl_rules  # noqa: E402
+from bigdl.library import rules as lib_rules  # noqa: E402
 
 ONLINE = "--online" in sys.argv
 # app.PORT is the single source of the port number across the whole project.
@@ -215,7 +216,7 @@ def test_sec_fetch_site():
 # ===================================================== path security
 def test_sanitize():
     section("sanitize_filename and containment")
-    sf = app.sanitize_filename
+    sf = lib_rules.sanitize_filename
     cases = [
         # Inner '..' must NOT be mangled: stripped of a separator they no
         # longer name a parent, and neutralising them broke legitimate names,
@@ -234,7 +235,7 @@ def test_sanitize():
             ok, detail = (got == expected), "expected %r" % expected
         check(name, ok, "%r -> %r (%s)" % (entry, got, detail))
 
-    folder = app.VIDEOS_FOLDER.resolve()
+    folder = config.VIDEOS_FOLDER.resolve()
     for entry in [
         "../../etc/passwd",
         ".." + BS + ".." + BS + "a.exe",
@@ -278,7 +279,7 @@ def test_baseline_behaviour():
     fresh.write_bytes(b"x")
     stale.write_bytes(b"x")
     os.utime(stale, (time.time() - 9999, time.time() - 9999))
-    app._sweep_old_files(folder, 300)
+    jobs._sweep_old_files(folder, 300)
     check(
         "sweep by age",
         fresh.exists() and not stale.exists(),
@@ -331,7 +332,7 @@ def test_deadlines():
     # The playlist loop pushes it forward per video: a long playlist is a
     # legitimate use. While the SSE net was anchored on start_time, it cut the
     # client off at 31 min while the worker carried on.
-    entry["deadline"] = time.time() + app.DOWNLOAD_TIMEOUT
+    entry["deadline"] = time.time() + config.DOWNLOAD_TIMEOUT
     # except Exception and not DownloadAborted: filtering on the message let a
     # stop of another kind through, and the assertion stayed green.
     leve_encore = None
@@ -355,7 +356,7 @@ def test_deadlines():
     )
     check(
         "message derived from the constant",
-        str(app.DOWNLOAD_TIMEOUT // 60) in config.TIMEOUT_MSG,
+        str(config.DOWNLOAD_TIMEOUT // 60) in config.TIMEOUT_MSG,
         config.TIMEOUT_MSG,
     )
 
@@ -375,7 +376,7 @@ def test_playlist_pushes_deadline():
     entry = {
         "queue": queue.Queue(maxsize=100),
         "start_time": start,
-        "deadline": start + app.DOWNLOAD_TIMEOUT,
+        "deadline": start + config.DOWNLOAD_TIMEOUT,
         "cancelled": False,
     }
     with fake_ydl(fake_ydl_class(extract)):
@@ -845,7 +846,7 @@ def _build_source(target):
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        **app._SUBPROCESS_FLAGS,
+        **config._SUBPROCESS_FLAGS,
     )
     return target.exists()
 
@@ -1229,7 +1230,7 @@ def test_real_cancellation():
         app.download_progress[job] = {
             "queue": q,
             "start_time": now,
-            "deadline": now + app.DOWNLOAD_TIMEOUT,
+            "deadline": now + config.DOWNLOAD_TIMEOUT,
             "cancelled": False,
         }
         with patched_on(ytdlp, _get_output_folder=lambda t: home, WORK_FOLDER=travail):
