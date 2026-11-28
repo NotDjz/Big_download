@@ -1,5 +1,6 @@
 """The Cut tab's HTTP routes: upload, preview, cut, progress."""
 
+import os
 import queue
 import threading
 import time
@@ -10,19 +11,30 @@ from flask import Blueprint, jsonify, request, send_file
 
 from bigdl.config import CUT_TIMEOUT, MUSIC_FOLDER, TEMP_FOLDER, VIDEOS_FOLDER, log
 from bigdl.cut.ffmpeg import _get_media_duration, _run_ffmpeg_cut
+from bigdl.cut.rules import parse_cut_bounds
 from bigdl.jobs import _sweep_old_files, cut_progress
-from bigdl.library.rules import sanitize_filename
+from bigdl.library.rules import fit_stem, sanitize_filename
 from bigdl.web import _sse_response
 
 bp = Blueprint("cut", __name__)
 
 
-def _next_versioned_name(folder, stem, ext):
-    """Next free name: stem_v2.ext, stem_v3.ext, and so on."""
+# Held while a cut's output name is chosen and claimed in cut_progress: two cuts
+# started before FFmpeg had created either file both got stem_v2 and wrote to it.
+_naming_lock = threading.Lock()
+
+
+def _next_versioned_name(folder, stem, ext, claimed=()):
+    """Next free name: stem_v2.ext, stem_v3.ext, and so on, skipping paths in `claimed`.
+
+    The stem is shortened so the suffix still fits: past MAX_STEM, the next
+    sanitize_filename cut the name back to a file that does not exist.
+    """
     version = 2
     while True:
-        name = f"{stem}_v{version}{ext}"
-        if not (folder / name).exists():
+        suffix = f"_v{version}"
+        name = f"{fit_stem(stem, len(suffix))}{suffix}{ext}"
+        if not (folder / name).exists() and folder / name not in claimed:
             return name
         version += 1
 
@@ -72,7 +84,8 @@ def upload_for_cut():
 
     safe_name = sanitize_filename(file.filename)
     temp_id = str(uuid.uuid4())[:8]
-    temp_name = f"{temp_id}_{safe_name}"
+    stem, ext = os.path.splitext(safe_name)
+    temp_name = f"{temp_id}_{fit_stem(stem, len(temp_id) + 1)}{ext}"
     temp_path = TEMP_FOLDER / temp_name
 
     file.save(str(temp_path))
@@ -115,21 +128,20 @@ def stream_temp(filename):
 @bp.route("/cut-uploaded", methods=["POST"])
 def cut_uploaded():
     """Cut an uploaded file and hand back the id its progress stream will use."""
-    data = request.get_json()
+    # silent: a body that is not JSON, or JSON that is not an object, is a 400 here, not a 500 from .get().
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Missing parameters"}), 400
     temp_name = data.get("temp_name")
-    start = data.get("start", 0)
     end = data.get("end")
     original_name = data.get("original_name", "")
 
     if not temp_name or end is None:
         return jsonify({"error": "Missing parameters"}), 400
-    try:
-        start = float(start)
-        end = float(end)
-    except (TypeError, ValueError):
-        return jsonify({"error": "Times must be numbers"}), 400
-    if end <= start:
-        return jsonify({"error": "The end time must come after the start"}), 400
+    bounds, error = parse_cut_bounds(data.get("start", 0), end)
+    if error:
+        return jsonify({"error": error}), 400
+    start, end = bounds
 
     safe_temp = sanitize_filename(temp_name)
     temp_path = (TEMP_FOLDER / safe_temp).resolve()
@@ -144,16 +156,17 @@ def cut_uploaded():
 
     audio_exts = (".mp3", ".m4a", ".wav", ".flac", ".ogg")
     dest_folder = MUSIC_FOLDER if ext.lower() in audio_exts else VIDEOS_FOLDER
-    out_name = _next_versioned_name(dest_folder, stem, ext)
-    out_path = dest_folder / out_name
-
     cut_id = str(uuid.uuid4())[:8]
     duration = end - start
-    cut_progress[cut_id] = {
-        "queue": queue.Queue(maxsize=200),
-        "deadline": time.time() + CUT_TIMEOUT,
-        "cancelled": False,
-    }
+    with _naming_lock:
+        claimed = {e.get("out") for e in cut_progress.values()}
+        out_path = dest_folder / _next_versioned_name(dest_folder, stem, ext, claimed)
+        cut_progress[cut_id] = {
+            "queue": queue.Queue(maxsize=200),
+            "deadline": time.time() + CUT_TIMEOUT,
+            "cancelled": False,
+            "out": out_path,  # claimed until the entry goes: FFmpeg creates the file later
+        }
     thread = threading.Thread(
         target=_run_ffmpeg_cut,
         args=(cut_id, temp_path, out_path, start, duration, temp_path),

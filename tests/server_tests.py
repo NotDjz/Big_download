@@ -44,6 +44,7 @@ import yt_dlp  # noqa: E402
 import app  # noqa: E402  (the server is the subject of the test)
 from bigdl import config, jobs, web  # noqa: E402  (the kernel app.py is built on)
 from bigdl.cut import ffmpeg as cut_ffmpeg  # noqa: E402
+from bigdl.cut import routes as cut_routes  # noqa: E402
 from bigdl.cut import rules as cut_rules  # noqa: E402
 from bigdl.download import instagram, ytdlp  # noqa: E402
 from bigdl.download import routes as dl_routes  # noqa: E402
@@ -1094,6 +1095,155 @@ def test_architecture():
     )
 
 
+def test_cut_bounds_rule():
+    section("Cut: bounds and names, the rules on their own")
+    bounds = cut_rules.parse_cut_bounds
+    check("a normal range passes", bounds(1, 5.5) == ((1.0, 5.5), None), bounds(1, 5.5))
+    # float() takes all of these, and each one sent FFmpeg off to fail, the error path deleting the upload.
+    for start, end in (
+        ("nan", 5),
+        (0, "inf"),
+        (0, float("inf")),
+        (-1, 5),
+        (3, 3),
+        (5, 2),
+        ("x", 2),
+        (None, 2),
+    ):
+        result = bounds(start, end)
+        check(
+            f"refused: start={start!r} end={end!r}",
+            result[0] is None and result[1],
+            result,
+        )
+
+    fit = lib_rules.fit_stem
+    long = "a" * 250
+    check("a short stem is left alone", fit("clip", 9) == "clip")
+    check(
+        "a long stem leaves room for what the server adds",
+        len(fit(long, 9)) == 200 - 9,
+        len(fit(long, 9)),
+    )
+    # The whole point: what the server composes must survive the sanitize every later route applies.
+    name = f"abcd1234_{fit(long, 9)}.mp4"
+    check(
+        "a composed name survives sanitize_filename",
+        lib_rules.sanitize_filename(name) == name,
+        len(name),
+    )
+
+
+# Exits 0 after reporting progress, having written nothing: the output file is missing.
+_FFMPEG_NO_OUTPUT = r"""
+import sys
+print('out_time_us=1000000', file=sys.stderr, flush=True)
+"""
+
+
+def test_cut_hardening():
+    section("Cut: the route refuses bad input and keeps the user's file")
+    scratch = Path(tempfile.mkdtemp(prefix="cut-hard-"))
+    temp, out = scratch / "temp", scratch / "out"
+    temp.mkdir()
+    out.mkdir()
+    started = []
+
+    def record(cut_id, input_path, out_path, start, duration, temp_cleanup=None):
+        started.append(
+            out_path.name
+        )  # writes nothing, as a cut still running would not have yet
+
+    with patched_on(
+        cut_routes,
+        TEMP_FOLDER=temp,
+        VIDEOS_FOLDER=out,
+        MUSIC_FOLDER=out,
+        _run_ffmpeg_cut=record,
+        _get_media_duration=lambda p: 10.0,
+    ):
+        source = temp / "abcd1234_clip.mp4"
+        source.write_bytes(b"x")
+        for body in (
+            '{"temp_name": "abcd1234_clip.mp4", "start": 0, "end": Infinity}',
+            '{"temp_name": "abcd1234_clip.mp4", "start": NaN, "end": 5}',
+            '{"temp_name": "abcd1234_clip.mp4", "start": -2, "end": 5}',
+            "[]",
+            "null",
+        ):
+            r = client.post(
+                "/cut-uploaded", headers=H, data=body, content_type="application/json"
+            )
+            check(f"400 for {body[:40]}", r.status_code == 400, f"code={r.status_code}")
+        check("no cut was started", started == [], started)
+        check("the upload is still there", source.exists())
+
+        # Two cuts of the same file before either has written its output: two names, not one _v2 twice.
+        started.clear()
+        for _ in range(2):
+            client.post(
+                "/cut-uploaded",
+                headers=H,
+                json={
+                    "temp_name": "abcd1234_clip.mp4",
+                    "start": 0,
+                    "end": 5,
+                    "original_name": "clip.mp4",
+                },
+            )
+        check("concurrent cuts get distinct names", len(set(started)) == 2, started)
+
+        # A long name: the upload's prefix and the cut's _v2 used to push it past 200 characters, and the
+        # next sanitize_filename truncated it to a file that does not exist (404 on preview, then on cut).
+        long_name = "b" * 195 + ".mp4"
+        r = client.post(
+            "/upload-for-cut",
+            headers=H,
+            data={"file": (io.BytesIO(b"y"), long_name)},
+            content_type="multipart/form-data",
+        )
+        temp_name = (r.get_json() or {}).get("temp_name", "")
+        r = client.get(f"/stream-temp/{temp_name}", headers=H)
+        check(
+            "a long upload can be previewed",
+            r.status_code == 200,
+            f"code={r.status_code}",
+        )
+        r.close()
+        started.clear()
+        r = client.post(
+            "/cut-uploaded",
+            headers=H,
+            json={
+                "temp_name": temp_name,
+                "start": 0,
+                "end": 5,
+                # 199 characters: + "_v2" would pass 200 without fit_stem.
+                "original_name": "c" * 199 + ".mp4",
+            },
+        )
+        named = started[0] if started else ""
+        check(
+            "a long upload can be cut",
+            r.status_code == 200 and named,
+            f"code={r.status_code}",
+        )
+        check(
+            "its output name survives sanitize_filename",
+            named and lib_rules.sanitize_filename(named) == named,
+            len(named),
+        )
+
+    final, _, _ = _stall_run(_FFMPEG_NO_OUTPUT)
+    check(
+        "no output is reported as such, not as a missing FFmpeg",
+        final.get("message") == "FFmpeg wrote no output",
+        final,
+    )
+    jobs.cut_progress.clear()
+    shutil.rmtree(scratch, ignore_errors=True)
+
+
 def test_cut_progress_rule():
     section("Cut: the progress rule, on its own")
     rule = cut_rules._cut_progress
@@ -1497,6 +1647,8 @@ OFFLINE = [
     test_instagram_cancellation,
     test_cut_cancellation,
     test_architecture,
+    test_cut_bounds_rule,
+    test_cut_hardening,
     test_cut_progress_rule,
     test_cut_stall_timeout,
     test_landing_page,

@@ -3,6 +3,16 @@
 import re
 from os.path import splitext
 
+# The longest stem a name may keep: sanitize_filename truncates to it, and what
+# the server composes around a name (an upload's id prefix, a cut's _v2) must
+# fit inside it, or the next sanitize truncates it to a file that does not exist.
+MAX_STEM = 200
+
+
+def fit_stem(stem, reserved):
+    """Shorten a stem so that `reserved` more characters still fit within MAX_STEM."""
+    return stem[: MAX_STEM - reserved]
+
 
 def sanitize_filename(filename):
     """Scrub a filename so it cannot escape its folder.
@@ -17,7 +27,7 @@ def sanitize_filename(filename):
     filename = filename.rstrip(" .")
     if not filename:
         filename = "_"
-    if len(filename) > 200:
+    if len(filename) > MAX_STEM:
         name, ext = splitext(filename)
-        filename = name[:200] + ext
+        filename = name[:MAX_STEM] + ext
     return filename

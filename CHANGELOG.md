@@ -3,6 +3,16 @@
 Each version's section is its release notes: the release workflow publishes it as-is.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions: [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- A cut sent with impossible bounds (not a number, infinite, or a negative start) was handed to FFmpeg, whose
+  failure deleted the uploaded file. Such bounds are now refused before anything runs, and the file stays.
+- A cut that FFmpeg finished without writing anything was reported as "FFmpeg not found". It now says FFmpeg wrote
+  no output.
+- A file with a very long name could be uploaded but not previewed or cut.
+- Two cuts of the same file started a moment apart could get the same name and overwrite each other.
+
 ## [2.3.2] - 2026-11-28
 
 ### Fixed

@@ -99,17 +99,21 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
         ]
         # stdout to DEVNULL: nothing was reading it, and a pipe that is never
         # drained can block FFmpeg as soon as it fills up.
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            # Not the locale codec: cp1252 choked on UTF-8 metadata in the
-            # banner, and the error path deleted the source mid-cut.
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            **_SUBPROCESS_FLAGS,
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                # Not the locale codec: cp1252 choked on UTF-8 metadata in the
+                # banner, and the error path deleted the source mid-cut.
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                **_SUBPROCESS_FLAGS,
+            )
+        except FileNotFoundError:  # only here does it mean FFmpeg itself is missing
+            fail("FFmpeg not found")
+            return
         # Published so /cancel can kill it. Unlike yt-dlp, FFmpeg is a
         # subprocess: stopping it is immediate and certain.
         entry["proc"] = proc
@@ -140,6 +144,12 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
             fail("FFmpeg failed while cutting")
             return
 
+        # FFmpeg can exit 0 having written nothing (a range past the end, after
+        # seeking): stat() then raised FileNotFoundError, read as a missing FFmpeg.
+        if not out_path.is_file():
+            fail("FFmpeg wrote no output")
+            return
+
         if temp_cleanup:
             temp_cleanup.unlink(missing_ok=True)
         size = out_path.stat().st_size
@@ -153,8 +163,6 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
                 "message": f"Cut finished: {out_path.name}",
             },
         )
-    except FileNotFoundError:
-        fail("FFmpeg not found")
     except Exception as e:
         log.error(f"Cut error: {e}")
         fail(str(e))

@@ -1,5 +1,27 @@
 """The cut's rules, with no I/O: data in, data out (Clean Architecture: tested alone, imports nothing outside)."""
 
+import math
+
+
+def parse_cut_bounds(start, end):
+    """Validate a cut's bounds from the client: ((start, end), None), or (None, the reason).
+
+    float() accepts "nan", "inf" and JSON's NaN/Infinity, and `end <= start` is
+    False whenever NaN is involved: such bounds reached FFmpeg, which failed,
+    and the error path deleted the user's upload.
+    """
+    try:
+        start, end = float(start), float(end)
+    except (TypeError, ValueError):
+        return None, "Times must be numbers"
+    if not (math.isfinite(start) and math.isfinite(end)):
+        return None, "Times must be finite numbers"
+    if start < 0:
+        return None, "The start time cannot be negative"
+    if end <= start:
+        return None, "The end time must come after the start"
+    return (start, end), None
+
 
 def _cut_progress(line, last_us, duration):
     """Read one line of FFmpeg's -progress output: the cut's progress rule, no I/O.
