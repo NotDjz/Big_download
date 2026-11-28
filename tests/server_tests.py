@@ -44,6 +44,7 @@ import yt_dlp  # noqa: E402
 import app  # noqa: E402  (the server is the subject of the test)
 from bigdl import config, jobs, web  # noqa: E402  (the kernel app.py is built on)
 from bigdl.cut import ffmpeg as cut_ffmpeg  # noqa: E402
+from bigdl.cut import routes as cut_routes  # noqa: E402
 from bigdl.cut import rules as cut_rules  # noqa: E402
 from bigdl.download import instagram, ytdlp  # noqa: E402
 from bigdl.download import routes as dl_routes  # noqa: E402
@@ -852,11 +853,12 @@ def _build_source(target):
 
 
 def _cut_run(mode, template):
-    """One cut run, either cancelled or driven into an error.
+    """One cut run: cancelled, driven into an error, or a short cut that succeeds ("ok").
 
-    The error is the control: on that path the source MUST be deleted. If both
-    kept it, the test would not be measuring the 'cancelled' branch but a
-    cleanup that had gone inert.
+    Only a success may delete the source: a cancellation or an error keeps it,
+    for the user to cut again. The success run is the control: if it kept the
+    source too, the test would be measuring a cleanup gone inert, not the
+    other branches.
 
     Each run gets its OWN copy, since the control deletes its own and that is
     exactly what it checks, but the video is encoded only once.
@@ -874,11 +876,11 @@ def _cut_run(mode, template):
         "deadline": time.time() + config.CUT_TIMEOUT,
     }
     # In error mode: an extension FFmpeg refuses, so it exits non-zero.
-    target = scratch / ("output.mp4" if mode == "cancel" else "output.unknownext")
+    target = scratch / ("output.unknownext" if mode == "error" else "output.mp4")
 
     t = threading.Thread(
         target=cut_ffmpeg._run_ffmpeg_cut,
-        args=(cut_id, source, target, 0, 40, source),
+        args=(cut_id, source, target, 0, 1 if mode == "ok" else 40, source),
         daemon=True,
     )
     t.start()
@@ -908,7 +910,7 @@ def _cut_run(mode, template):
 
 
 def test_cut_cancellation():
-    section("Cut: stopping keeps the source")
+    section("Cut: only a success deletes the source")
     workshop = Path(tempfile.mkdtemp(prefix="cut-template-"))
     template = workshop / "template.mp4"
     if not _build_source(template):
@@ -930,9 +932,17 @@ def test_cut_cancellation():
     check("the source is kept", source is True)
     check("no partial output left behind", output is False)
 
+    # An error keeps the source too: bad bounds or a broken file are the cut's fault, not the upload's, and
+    # deleting it on every failure turned each new kind of bad input into a lost file.
     status, source, output, _ = _cut_run("error", template)
-    check("control: terminal state = error", status == "error", "got: %s" % status)
-    check("control: the source is deleted", source is False)
+    check("terminal state = error", status == "error", "got: %s" % status)
+    check("an error keeps the source", source is True)
+    status, source, output, _ = _cut_run("ok", template)
+    check(
+        "control: terminal state = complete", status == "complete", "got: %s" % status
+    )
+    check("control: a success deletes the source", source is False)
+    check("control: and leaves its output", output is True)
     shutil.rmtree(workshop, ignore_errors=True)
 
 
@@ -1092,6 +1102,394 @@ def test_architecture():
         flagged == ["urllib", "urllib.request", "urllib.request", "os"],
         flagged,
     )
+
+
+def test_cut_bounds_rule():
+    section("Cut: bounds and names, the rules on their own")
+    bounds = cut_rules.parse_cut_bounds
+    check("a normal range passes", bounds(1, 5.5) == ((1.0, 5.5), None), bounds(1, 5.5))
+    # float() takes all of these, and each one sent FFmpeg off to fail, the error path deleting the upload.
+    for start, end in (
+        ("nan", 5),
+        (0, "inf"),
+        (0, float("inf")),
+        (-1, 5),
+        (3, 3),
+        (5, 2),
+        ("x", 2),
+        (None, 2),
+        (False, True),  # float(True) is 1.0: a malformed body passed as the range 0-1 s
+    ):
+        result = bounds(start, end)
+        check(
+            f"refused: start={start!r} end={end!r}",
+            result[0] is None and result[1],
+            result,
+        )
+    # Against the media's own length: a start past the end made FFmpeg write nothing.
+    check(
+        "a start past the media is refused",
+        bounds(20, 30, 10)[0] is None,
+        bounds(20, 30, 10),
+    )
+    check(
+        "an end past the media is clamped to it",
+        bounds(2, 30, 10) == ((2.0, 10.0), None),
+        bounds(2, 30, 10),
+    )
+    check(
+        "no known length: no clamp", bounds(2, 30) == ((2.0, 30.0), None), bounds(2, 30)
+    )
+    # Judged as FFmpeg will see them, to the millisecond: 9.9999 was a valid start in a 10 s file, then reached
+    # FFmpeg as "-ss 9.999 -t 0.000", which wrote an empty clip.
+    check(
+        "bounds are judged rounded",
+        bounds(9.9999, 20, 10)[0] is None,
+        bounds(9.9999, 20, 10),
+    )
+    # The clamp too: an unrounded length brought back a 0.4 ms range, sent as "-t 0.000".
+    check(
+        "the clamped range is judged rounded",
+        bounds(10.0002, 20, 10.0004)[0] is None,
+        bounds(10.0002, 20, 10.0004),
+    )
+    check(
+        "a start just below zero is negative",
+        bounds(-0.0004, 5)[0] is None,
+        bounds(-0.0004, 5),
+    )
+    check(
+        "a sub-millisecond range is empty",
+        bounds(1.00004, 1.00049)[0] is None,
+        bounds(1.00004, 1.00049),
+    )
+    # With no known length, nothing bounded the values: FFmpeg refused 1e23 ("Invalid duration").
+    for start, end in ((0, 1e23), (1e300, 1e301)):
+        check(
+            f"refused as too large: {end!r}",
+            bounds(start, end)[0] is None,
+            bounds(start, end),
+        )
+
+    fit = lib_rules.fit_stem
+    long = "a" * 250
+    check("a short stem is left alone", fit("clip", 9) == "clip")
+    check(
+        "a long stem leaves room for what the server adds",
+        len(fit(long, 9)) == 200 - 9,
+        len(fit(long, 9)),
+    )
+    # The whole point: what the server composes must survive the sanitize every later route applies.
+    name = f"abcd1234_{fit(long, 9)}.mp4"
+    check(
+        "a composed name survives sanitize_filename",
+        lib_rules.sanitize_filename(name) == name,
+        len(name),
+    )
+
+
+# Exits 0 having written only a header and no frame (measured: a 262-byte file for -ss past the last frame).
+_FFMPEG_HEADER_ONLY = r"""
+import sys
+print('out_time_us=0', file=sys.stderr, flush=True)
+open(sys.argv[1], 'wb').write(b'h' * 262)
+"""
+
+# Exits 0 after reporting progress, having written nothing: the output file is missing.
+_FFMPEG_NO_OUTPUT = r"""
+import sys
+print('out_time_us=1000000', file=sys.stderr, flush=True)
+"""
+
+
+def test_cut_hardening():
+    section("Cut: the route refuses bad input and keeps the user's file")
+    scratch = Path(tempfile.mkdtemp(prefix="cut-hard-"))
+    temp, out = scratch / "temp", scratch / "out"
+    temp.mkdir()
+    out.mkdir()
+    started = []
+
+    def record(cut_id, input_path, out_path, start, duration, temp_cleanup=None):
+        started.append(
+            out_path.name
+        )  # writes nothing, as a cut still running would not have yet
+
+    with patched_on(
+        cut_routes,
+        TEMP_FOLDER=temp,
+        VIDEOS_FOLDER=out,
+        MUSIC_FOLDER=out,
+        _run_ffmpeg_cut=record,
+        _get_media_duration=lambda p: 10.0,
+    ):
+        source = temp / "abcd1234_clip.mp4"
+        source.write_bytes(b"x")
+        cut_routes._upload_durations["abcd1234_clip.mp4"] = (
+            10.0  # as its upload would have measured
+        )
+        for body in (
+            '{"temp_name": "abcd1234_clip.mp4", "start": 0, "end": Infinity}',
+            '{"temp_name": "abcd1234_clip.mp4", "start": NaN, "end": 5}',
+            '{"temp_name": "abcd1234_clip.mp4", "start": -2, "end": 5}',
+            "[]",
+            "null",
+        ):
+            r = client.post(
+                "/cut-uploaded", headers=H, data=body, content_type="application/json"
+            )
+            check(f"400 for {body[:40]}", r.status_code == 400, f"code={r.status_code}")
+        check("no cut was started", started == [], started)
+        check("the upload is still there", source.exists())
+
+        # Two cuts of the same file before either has written its output: two names, not one _v2 twice.
+        started.clear()
+        for _ in range(2):
+            client.post(
+                "/cut-uploaded",
+                headers=H,
+                json={
+                    "temp_name": "abcd1234_clip.mp4",
+                    "start": 0,
+                    "end": 5,
+                    "original_name": "clip.mp4",
+                },
+            )
+        check("concurrent cuts get distinct names", len(set(started)) == 2, started)
+
+        # A long name: the upload's prefix and the cut's _v2 used to push it past 200 characters, and the
+        # next sanitize_filename truncated it to a file that does not exist (404 on preview, then on cut).
+        long_name = "b" * 195 + ".mp4"
+        r = client.post(
+            "/upload-for-cut",
+            headers=H,
+            data={"file": (io.BytesIO(b"y"), long_name)},
+            content_type="multipart/form-data",
+        )
+        temp_name = (r.get_json() or {}).get("temp_name", "")
+        r = client.get(f"/stream-temp/{temp_name}", headers=H)
+        check(
+            "a long upload can be previewed",
+            r.status_code == 200,
+            f"code={r.status_code}",
+        )
+        r.close()
+        started.clear()
+        r = client.post(
+            "/cut-uploaded",
+            headers=H,
+            json={
+                "temp_name": temp_name,
+                "start": 0,
+                "end": 5,
+                # 199 characters: + "_v2" would pass 200 without fit_stem.
+                "original_name": "c" * 199 + ".mp4",
+            },
+        )
+        named = started[0] if started else ""
+        check(
+            "a long upload can be cut",
+            r.status_code == 200 and named,
+            f"code={r.status_code}",
+        )
+        check(
+            "its output name survives sanitize_filename",
+            named and lib_rules.sanitize_filename(named) == named,
+            len(named),
+        )
+
+        # A start past the media's end: refused here, since FFmpeg would have written nothing.
+        r = client.post(
+            "/cut-uploaded",
+            headers=H,
+            json={"temp_name": "abcd1234_clip.mp4", "start": 20, "end": 30},
+        )
+        check(
+            "a start past the media is a 400",
+            r.status_code == 400,
+            f"code={r.status_code}",
+        )
+
+        # The claim on a name outlives the progress stream: the client closing it (the SSE finally pops
+        # the entry) while FFmpeg had not created the file yet let the next cut take the same _v2.
+        started.clear()
+        client.post(
+            "/cut-uploaded",
+            headers=H,
+            json={
+                "temp_name": "abcd1234_clip.mp4",
+                "start": 0,
+                "end": 5,
+                "original_name": "other.mp4",
+            },
+        )
+        jobs.cut_progress.clear()
+        client.post(
+            "/cut-uploaded",
+            headers=H,
+            json={
+                "temp_name": "abcd1234_clip.mp4",
+                "start": 0,
+                "end": 5,
+                "original_name": "other.mp4",
+            },
+        )
+        check(
+            "a name stays claimed after the stream closes",
+            len(set(started)) == 2,
+            started,
+        )
+
+        # NTFS ignores case: Clip_v2.mp4 and clip_v2.mp4 are one file, so they are one claim.
+        started.clear()
+        for original in ("Clip.mp4", "clip.mp4"):
+            client.post(
+                "/cut-uploaded",
+                headers=H,
+                json={
+                    "temp_name": "abcd1234_clip.mp4",
+                    "start": 0,
+                    "end": 5,
+                    "original_name": original,
+                },
+            )
+        check(
+            "case variants get distinct names (WindowsPath ignores case)",
+            len({n.lower() for n in started}) == 2,
+            started,
+        )
+
+        # The worker releases a claim; if the worker never starts, the route must.
+        cut_ffmpeg.claimed_outputs.clear()
+
+        class NoThread:
+            def __init__(self, *a, **k):
+                pass
+
+            def start(self):
+                raise RuntimeError("can't start new thread")
+
+        with patched_on(threading, Thread=NoThread):
+            r = client.post(
+                "/cut-uploaded",
+                headers=H,
+                json={"temp_name": "abcd1234_clip.mp4", "start": 0, "end": 5},
+            )
+        check(
+            "a worker that cannot start leaves no claim",
+            not cut_ffmpeg.claimed_outputs,
+            cut_ffmpeg.claimed_outputs,
+        )
+
+        # The upload's measured length is what the cut is judged against, without a second ffprobe.
+        r = client.post(
+            "/upload-for-cut",
+            headers=H,
+            data={"file": (io.BytesIO(b"m"), "measured.mp4")},
+            content_type="multipart/form-data",
+        )
+        measured = (r.get_json() or {}).get("temp_name", "")
+    with patched_on(
+        cut_routes,
+        TEMP_FOLDER=temp,
+        VIDEOS_FOLDER=out,
+        MUSIC_FOLDER=out,
+        _run_ffmpeg_cut=record,
+        _get_media_duration=lambda p: 0.0,  # a second ffprobe would know nothing
+    ):
+        r = client.post(
+            "/cut-uploaded",
+            headers=H,
+            json={"temp_name": measured, "start": 20, "end": 30},
+        )
+        check(
+            "the upload's length is reused",
+            r.status_code == 400,
+            f"code={r.status_code}",
+        )
+    cut_ffmpeg.claimed_outputs.clear()
+
+    final, _, _ = _stall_run(_FFMPEG_HEADER_ONLY)
+    check(
+        "a header-only output is no output",
+        final.get("message") == "FFmpeg wrote no output",
+        final,
+    )
+
+    final, _, _ = _stall_run(_FFMPEG_NO_OUTPUT)
+    check(
+        "no output is reported as such, not as a missing FFmpeg",
+        final.get("message") == "FFmpeg wrote no output",
+        final,
+    )
+
+    # Through the real worker, with a source to lose: no output keeps it, and the bounds reach FFmpeg in
+    # fixed-point (it rejects str(1e-05) == "1e-05").
+    source = scratch / "keep.mp4"
+    source.write_bytes(b"z")
+    seen_cmd = []
+    real_popen = subprocess.Popen
+
+    def no_output_popen(cmd, **kw):
+        seen_cmd.extend(cmd)
+        return real_popen([sys.executable, "-c", _FFMPEG_NO_OUTPUT], **kw)
+
+    jobs.cut_progress["keep"] = {
+        "queue": queue.Queue(maxsize=100),
+        "cancelled": False,
+        "deadline": time.time() + 60,
+    }
+    cut_ffmpeg.claimed_outputs.add(scratch / "keep_v2.mp4")  # as the route claims it
+    with patched_on(subprocess, Popen=no_output_popen):
+        cut_ffmpeg._run_ffmpeg_cut(
+            "keep", source, scratch / "keep_v2.mp4", 0.00001, 2.5, source
+        )
+    check("no output keeps the upload", source.exists())
+
+    # A cut that never ran (the client left before the worker read the registry) keeps the upload too.
+    cut_ffmpeg._run_ffmpeg_cut("gone", source, scratch / "gone_v2.mp4", 0, 1, source)
+    check("a cut that never ran keeps the upload", source.exists())
+
+    # A success whose source cannot be deleted (still open for the preview) is still a success.
+    class LockedSource:
+        def unlink(self, missing_ok=False):
+            raise PermissionError("[WinError 32] in use by the preview")
+
+    jobs.cut_progress["locked"] = {
+        "queue": queue.Queue(maxsize=100),
+        "cancelled": False,
+        "deadline": time.time() + 60,
+    }
+    done = scratch / "locked_v2.mp4"
+    real_popen2 = subprocess.Popen
+    with patched_on(
+        subprocess,
+        Popen=lambda cmd, **kw: real_popen2(
+            [sys.executable, "-c", _FFMPEG_UTF8, cmd[-1]], **kw
+        ),
+    ):
+        cut_ffmpeg._run_ffmpeg_cut("locked", source, done, 0, 1, LockedSource())
+    ev = []
+    while not jobs.cut_progress["locked"]["queue"].empty():
+        ev.append(jobs.cut_progress["locked"]["queue"].get_nowait())
+    final = next((e for e in ev if e.get("status") in jobs.TERMINAL_STATUSES), {})
+    check(
+        "a locked source does not undo a finished cut",
+        final.get("status") == "complete" and done.exists(),
+        final,
+    )
+    check(
+        "the worker releases its name when the cut ends",
+        scratch / "keep_v2.mp4" not in cut_ffmpeg.claimed_outputs,
+    )
+    times = [seen_cmd[i + 1] for i, a in enumerate(seen_cmd) if a in ("-ss", "-t")]
+    check(
+        "bounds reach FFmpeg in fixed-point",
+        times and not any("e" in t for t in times),
+        times,
+    )
+    jobs.cut_progress.clear()
+    shutil.rmtree(scratch, ignore_errors=True)
 
 
 def test_cut_progress_rule():
@@ -1497,6 +1895,8 @@ OFFLINE = [
     test_instagram_cancellation,
     test_cut_cancellation,
     test_architecture,
+    test_cut_bounds_rule,
+    test_cut_hardening,
     test_cut_progress_rule,
     test_cut_stall_timeout,
     test_landing_page,
@@ -1515,6 +1915,9 @@ def main():
         # The rate limiter is a third: past 10 POSTs a minute, a section would
         # take a 429 that has nothing to do with its subject.
         web._request_times.clear()
+        # And the cut's two: names claimed by cuts, lengths measured at upload.
+        cut_ffmpeg.claimed_outputs.clear()
+        cut_routes._upload_durations.clear()
     if not ONLINE:
         print("\n  (network tests skipped; pass --online to include them)")
 

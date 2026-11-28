@@ -1,5 +1,6 @@
 """The Cut tab's HTTP routes: upload, preview, cut, progress."""
 
+import os
 import queue
 import threading
 import time
@@ -9,20 +10,35 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request, send_file
 
 from bigdl.config import CUT_TIMEOUT, MUSIC_FOLDER, TEMP_FOLDER, VIDEOS_FOLDER, log
-from bigdl.cut.ffmpeg import _get_media_duration, _run_ffmpeg_cut
+from bigdl.cut.ffmpeg import (
+    _get_media_duration,
+    _run_ffmpeg_cut,
+    claim_lock,
+    claimed_outputs,
+)
+from bigdl.cut.rules import parse_cut_bounds
 from bigdl.jobs import _sweep_old_files, cut_progress
-from bigdl.library.rules import sanitize_filename
+from bigdl.library.rules import fit_stem, sanitize_filename
 from bigdl.web import _sse_response
 
 bp = Blueprint("cut", __name__)
 
+# temp_name -> the duration ffprobe measured at upload.
+# shortcut: one small entry per upload, never pruned; prune with the hourly temp sweep if uploads ever pile up.
+_upload_durations = {}
 
-def _next_versioned_name(folder, stem, ext):
-    """Next free name: stem_v2.ext, stem_v3.ext, and so on."""
+
+def _next_versioned_name(folder, stem, ext, claimed=()):
+    """Next free name: stem_v2.ext, stem_v3.ext, and so on, skipping paths in `claimed`.
+
+    The stem is shortened so the suffix still fits: past MAX_STEM, the next
+    sanitize_filename cut the name back to a file that does not exist.
+    """
     version = 2
     while True:
-        name = f"{stem}_v{version}{ext}"
-        if not (folder / name).exists():
+        suffix = f"_v{version}"
+        name = f"{fit_stem(stem, len(suffix))}{suffix}{ext}"
+        if not (folder / name).exists() and folder / name not in claimed:
             return name
         version += 1
 
@@ -72,7 +88,8 @@ def upload_for_cut():
 
     safe_name = sanitize_filename(file.filename)
     temp_id = str(uuid.uuid4())[:8]
-    temp_name = f"{temp_id}_{safe_name}"
+    stem, ext = os.path.splitext(safe_name)
+    temp_name = f"{temp_id}_{fit_stem(stem, len(temp_id) + 1)}{ext}"
     temp_path = TEMP_FOLDER / temp_name
 
     file.save(str(temp_path))
@@ -88,6 +105,9 @@ def upload_for_cut():
             }
         ), 400
 
+    _upload_durations[temp_name] = (
+        duration  # after the check: a refused upload leaves nothing
+    )
     log.info(f"Upload for cut: {safe_name} ({file_size / 1024 / 1024:.1f} MB)")
     return jsonify(
         {
@@ -115,21 +135,16 @@ def stream_temp(filename):
 @bp.route("/cut-uploaded", methods=["POST"])
 def cut_uploaded():
     """Cut an uploaded file and hand back the id its progress stream will use."""
-    data = request.get_json()
+    # silent: a body that is not JSON, or JSON that is not an object, is a 400 here, not a 500 from .get().
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Missing parameters"}), 400
     temp_name = data.get("temp_name")
-    start = data.get("start", 0)
     end = data.get("end")
     original_name = data.get("original_name", "")
 
     if not temp_name or end is None:
         return jsonify({"error": "Missing parameters"}), 400
-    try:
-        start = float(start)
-        end = float(end)
-    except (TypeError, ValueError):
-        return jsonify({"error": "Times must be numbers"}), 400
-    if end <= start:
-        return jsonify({"error": "The end time must come after the start"}), 400
 
     safe_temp = sanitize_filename(temp_name)
     temp_path = (TEMP_FOLDER / safe_temp).resolve()
@@ -138,26 +153,43 @@ def cut_uploaded():
     if not temp_path.exists():
         return jsonify({"error": "Source file not found"}), 404
 
+    # Against the length measured at upload; a second ffprobe ran synchronously on
+    # every click, with nothing to cancel while it hung. 0 if never measured: no clamp.
+    bounds, error = parse_cut_bounds(
+        data.get("start", 0), end, _upload_durations.get(safe_temp, 0)
+    )
+    if error:
+        return jsonify({"error": error}), 400
+    start, end = bounds
+
     stem = Path(original_name).stem if original_name else temp_path.stem
     stem = sanitize_filename(stem)
     ext = temp_path.suffix
 
     audio_exts = (".mp3", ".m4a", ".wav", ".flac", ".ogg")
     dest_folder = MUSIC_FOLDER if ext.lower() in audio_exts else VIDEOS_FOLDER
-    out_name = _next_versioned_name(dest_folder, stem, ext)
-    out_path = dest_folder / out_name
-
     cut_id = str(uuid.uuid4())[:8]
     duration = end - start
+    with claim_lock:
+        out_path = dest_folder / _next_versioned_name(
+            dest_folder, stem, ext, claimed_outputs
+        )
+        claimed_outputs.add(out_path)  # released by the worker when the cut ends
     cut_progress[cut_id] = {
         "queue": queue.Queue(maxsize=200),
         "deadline": time.time() + CUT_TIMEOUT,
         "cancelled": False,
     }
-    thread = threading.Thread(
-        target=_run_ffmpeg_cut,
-        args=(cut_id, temp_path, out_path, start, duration, temp_path),
-        daemon=True,
-    )
-    thread.start()
+    try:
+        threading.Thread(
+            target=_run_ffmpeg_cut,
+            args=(cut_id, temp_path, out_path, start, duration, temp_path),
+            daemon=True,
+        ).start()
+    except BaseException:
+        # The worker releases its claim; one that never started cannot.
+        with claim_lock:
+            claimed_outputs.discard(out_path)
+        cut_progress.pop(cut_id, None)
+        raise
     return jsonify({"cut_id": cut_id})

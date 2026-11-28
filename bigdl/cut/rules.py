@@ -1,5 +1,46 @@
 """The cut's rules, with no I/O: data in, data out (Clean Architecture: tested alone, imports nothing outside)."""
 
+import math
+
+# Ten days. With no known length nothing else bounded a time, and FFmpeg refused
+# 1e23 ("Invalid duration"); the cap also keeps fixed-point formatting short.
+MAX_SECONDS = 10 * 24 * 3600
+
+
+def parse_cut_bounds(start, end, media_duration=None):
+    """Validate a cut's bounds from the client: ((start, end), None), or (None, the reason).
+
+    float() accepts "nan", "inf", JSON's NaN/Infinity and booleans, and
+    `end <= start` is False whenever NaN is involved: such bounds reached
+    FFmpeg, which failed, and the error path deleted the user's upload. Given
+    the media's length, a start past it is refused (FFmpeg would write nothing)
+    and the end is clamped to it.
+    """
+    if isinstance(start, bool) or isinstance(end, bool):
+        return None, "Times must be numbers"
+    try:
+        start, end = float(start), float(end)
+    except (TypeError, ValueError):
+        return None, "Times must be numbers"
+    if not (math.isfinite(start) and math.isfinite(end)):
+        return None, "Times must be finite numbers"
+    if max(start, end) > MAX_SECONDS:
+        return None, "Times are too large"
+    if start < 0:  # before rounding: -0.0004 rounds to -0.0, which is not < 0
+        return None, "The start time cannot be negative"
+    # Judged as FFmpeg will receive them, to the millisecond, clamp included:
+    # 9.9999 passed as a start in a 10 s file and reached FFmpeg as
+    # "-ss 9.999 -t 0.000", and so did an end clamped to an unrounded length.
+    start, end = round(start, 3), round(end, 3)
+    if media_duration:
+        length = round(media_duration, 3)
+        if start >= length:
+            return None, "The start time is past the end of the file"
+        end = min(end, length)
+    if end <= start:
+        return None, "The end time must come after the start"
+    return (start, end), None
+
 
 def _cut_progress(line, last_us, duration):
     """Read one line of FFmpeg's -progress output: the cut's progress rule, no I/O.

@@ -3,6 +3,18 @@
 Each version's section is its release notes: the release workflow publishes it as-is.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions: [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- A failed cut deleted the uploaded file, so a single bad attempt meant uploading again. Now only a successful cut
+  removes it: after an error, a timeout or an empty result the file stays, ready for another try.
+- Impossible bounds (not a number, infinite, negative, past the end of the file, or a range shorter than a
+  millisecond) are refused before FFmpeg runs, and an end past the file is cut at its end.
+- A cut that produced nothing was reported as "FFmpeg not found", or even as finished with an empty clip. It now
+  says FFmpeg wrote no output.
+- A file with a very long name could be uploaded but not previewed or cut.
+- Two cuts of the same file started a moment apart could get the same name and overwrite each other.
+
 ## [2.3.2] - 2026-11-28
 
 ### Fixed

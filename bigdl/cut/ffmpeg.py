@@ -16,6 +16,13 @@ from bigdl.config import (
 from bigdl.cut.rules import _cut_progress
 from bigdl.jobs import _kill_quietly, _put_final, _put_progress, cut_progress
 
+# Output paths claimed by cuts that have not finished, released by the worker
+# itself: kept in cut_progress, a claim went with the entry when the client
+# closed its progress stream, and the next cut took the same _v2 while FFmpeg
+# had not created the file yet. Taken and checked under claim_lock.
+claimed_outputs = set()
+claim_lock = threading.Lock()
+
 
 def _watch_cut(entry, proc, timed_out):
     """Kill FFmpeg once the cut's deadline passes, checked once a second.
@@ -34,7 +41,11 @@ def _watch_cut(entry, proc, timed_out):
 
 
 def _pump_cut_progress(proc, entry, q, duration):
-    """Relay FFmpeg's progress lines, pushing the deadline when the cut advances."""
+    """Relay FFmpeg's progress lines, pushing the deadline when the cut advances.
+
+    Returns the furthest output time FFmpeg reported (-1 if none): 0 means it
+    wrote no frame, whatever file it left behind.
+    """
     last_us = -1
     for line in proc.stderr:
         progress = _cut_progress(line, last_us, duration)
@@ -47,47 +58,56 @@ def _pump_cut_progress(proc, entry, q, duration):
         # soon as the client leaves, and a blocking put then froze the worker
         # (stderr no longer drained, cleanup never done) until the process died.
         _put_progress(q, {"status": "progress", "percent": percent})
+    return last_us
 
 
 def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=None):
-    """Run FFmpeg on a worker thread, reading progress off stderr."""
+    """Run one cut on its worker thread, then release its output name, however it ended."""
+    try:
+        _cut_with_ffmpeg(cut_id, input_path, out_path, start, duration, temp_cleanup)
+    finally:
+        with claim_lock:
+            claimed_outputs.discard(out_path)
+
+
+def _cut_with_ffmpeg(cut_id, input_path, out_path, start, duration, temp_cleanup):
+    """Run FFmpeg, reading progress off stderr."""
     entry = cut_progress.get(cut_id)
     if not entry:
         # The client disconnected before we started: the SSE stream's finally
-        # has already removed the entry. Without this guard the KeyError skipped
-        # the cleanup and left the temporary file behind, up to 2 GB of it.
-        if temp_cleanup:
-            temp_cleanup.unlink(missing_ok=True)
+        # has already removed the entry (without this guard, a KeyError). The
+        # upload stays like after any cut that did not succeed; the hourly
+        # temp_uploads/ sweep removes it if nobody comes back.
         return
     q = entry["queue"]
 
     def fail(message, status="error"):
-        """Leaving with nothing to show: one place to clean up.
+        """Leaving with nothing to show: remove the partial output, KEEP the source.
 
-        A cancellation keeps the source file. Stopping a cut is precisely what
-        you do to redo it with different bounds: deleting the source answered
-        404 "source file not found" when relaunching, and killed the preview on
-        the way. The hourly temp_uploads/ sweep takes care of it instead.
+        Only a successful cut deletes the upload. A cancellation, an error, a
+        timeout or an empty output all keep it, for the user to cut again: the
+        cut failed, not the file. Deleting it on every failure turned each new
+        kind of bad input (NaN bounds, a start past the end, 1e-05 written as
+        such) into a lost upload, one guard at a time. The hourly temp_uploads/
+        sweep removes what nobody comes back for.
         """
-        doomed = (out_path,) if status == "cancelled" else (out_path, temp_cleanup)
-        for path in doomed:
-            if path:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
         _put_final(q, {"status": status, "message": message})
 
     try:
         cmd = [
             FFMPEG_PATH,
             "-y",
+            # Fixed-point: str() writes 1e-05 for a tiny float, which FFmpeg's time parser rejects.
             "-ss",
-            str(start),
+            f"{start:.3f}",
             "-i",
             str(input_path),
             "-t",
-            str(duration),
+            f"{duration:.3f}",
             # About 7x faster than the default 'medium', measured on 1080p.
             "-preset",
             "veryfast",
@@ -99,17 +119,21 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
         ]
         # stdout to DEVNULL: nothing was reading it, and a pipe that is never
         # drained can block FFmpeg as soon as it fills up.
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            # Not the locale codec: cp1252 choked on UTF-8 metadata in the
-            # banner, and the error path deleted the source mid-cut.
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            **_SUBPROCESS_FLAGS,
-        )
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                # Not the locale codec: cp1252 choked on UTF-8 metadata in the
+                # banner, and the error path deleted the source mid-cut.
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                **_SUBPROCESS_FLAGS,
+            )
+        except FileNotFoundError:  # only here does it mean FFmpeg itself is missing
+            fail("FFmpeg not found")
+            return
         # Published so /cancel can kill it. Unlike yt-dlp, FFmpeg is a
         # subprocess: stopping it is immediate and certain.
         entry["proc"] = proc
@@ -123,7 +147,7 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
         threading.Thread(
             target=_watch_cut, args=(entry, proc, timed_out), daemon=True
         ).start()
-        _pump_cut_progress(proc, entry, q, duration)
+        furthest_us = _pump_cut_progress(proc, entry, q, duration)
         proc.wait()
 
         if entry.get("cancelled"):
@@ -140,8 +164,21 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
             fail("FFmpeg failed while cutting")
             return
 
+        # FFmpeg can exit 0 having written nothing (a range past the end, after
+        # seeking): stat() then raised FileNotFoundError, read as a missing FFmpeg.
+        # A header with no frame is no output either (measured: 262 bytes for
+        # -ss past the last frame), and FFmpeg says so by never moving out_time:
+        # it stays N/A there, while a single frame already reports 32993 us.
+        if furthest_us <= 0 or not out_path.is_file():
+            fail("FFmpeg wrote no output")
+            return
+
         if temp_cleanup:
-            temp_cleanup.unlink(missing_ok=True)
+            # Still open for the preview, say: the sweep gets it, the cut stands.
+            try:
+                temp_cleanup.unlink(missing_ok=True)
+            except OSError:
+                pass
         size = out_path.stat().st_size
         log.info(f"Cut done: {out_path.name} ({size / 1024 / 1024:.1f} MB)")
         _put_final(
@@ -153,8 +190,6 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
                 "message": f"Cut finished: {out_path.name}",
             },
         )
-    except FileNotFoundError:
-        fail("FFmpeg not found")
     except Exception as e:
         log.error(f"Cut error: {e}")
         fail(str(e))
