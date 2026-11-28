@@ -7,6 +7,10 @@
     <MajorUpgrade AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <!-- Restart Manager closes a running Big Downloader before replacing or removing its files, then relaunches what
+         registered for restart: measured in CI (tests/msi/lifecycle.ps1), the app came back, window and port 5555,
+         right after being uninstalled. Closing is wanted; relaunching is not. -->
+    <Property Id="MSIDISABLERMRESTART" Value="1" />
 
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="ProgramsFolder" Name="Programs">
