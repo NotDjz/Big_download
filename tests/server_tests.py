@@ -1147,6 +1147,17 @@ def test_cut_bounds_rule():
         bounds(9.9999, 20, 10)[0] is None,
         bounds(9.9999, 20, 10),
     )
+    # The clamp too: an unrounded length brought back a 0.4 ms range, sent as "-t 0.000".
+    check(
+        "the clamped range is judged rounded",
+        bounds(10.0002, 20, 10.0004)[0] is None,
+        bounds(10.0002, 20, 10.0004),
+    )
+    check(
+        "a start just below zero is negative",
+        bounds(-0.0004, 5)[0] is None,
+        bounds(-0.0004, 5),
+    )
     check(
         "a sub-millisecond range is empty",
         bounds(1.00004, 1.00049)[0] is None,
@@ -1343,7 +1354,7 @@ def test_cut_hardening():
                 },
             )
         check(
-            "names differing only by case are distinct claims",
+            "case variants get distinct names (WindowsPath ignores case)",
             len({n.lower() for n in started}) == 2,
             started,
         )
@@ -1434,6 +1445,39 @@ def test_cut_hardening():
             "keep", source, scratch / "keep_v2.mp4", 0.00001, 2.5, source
         )
     check("no output keeps the upload", source.exists())
+
+    # A cut that never ran (the client left before the worker read the registry) keeps the upload too.
+    cut_ffmpeg._run_ffmpeg_cut("gone", source, scratch / "gone_v2.mp4", 0, 1, source)
+    check("a cut that never ran keeps the upload", source.exists())
+
+    # A success whose source cannot be deleted (still open for the preview) is still a success.
+    class LockedSource:
+        def unlink(self, missing_ok=False):
+            raise PermissionError("[WinError 32] in use by the preview")
+
+    jobs.cut_progress["locked"] = {
+        "queue": queue.Queue(maxsize=100),
+        "cancelled": False,
+        "deadline": time.time() + 60,
+    }
+    done = scratch / "locked_v2.mp4"
+    real_popen2 = subprocess.Popen
+    with patched_on(
+        subprocess,
+        Popen=lambda cmd, **kw: real_popen2(
+            [sys.executable, "-c", _FFMPEG_UTF8, cmd[-1]], **kw
+        ),
+    ):
+        cut_ffmpeg._run_ffmpeg_cut("locked", source, done, 0, 1, LockedSource())
+    ev = []
+    while not jobs.cut_progress["locked"]["queue"].empty():
+        ev.append(jobs.cut_progress["locked"]["queue"].get_nowait())
+    final = next((e for e in ev if e.get("status") in jobs.TERMINAL_STATUSES), {})
+    check(
+        "a locked source does not undo a finished cut",
+        final.get("status") == "complete" and done.exists(),
+        final,
+    )
     check(
         "the worker releases its name when the cut ends",
         scratch / "keep_v2.mp4" not in cut_ffmpeg.claimed_outputs,

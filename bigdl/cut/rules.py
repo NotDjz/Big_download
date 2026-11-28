@@ -26,17 +26,19 @@ def parse_cut_bounds(start, end, media_duration=None):
         return None, "Times must be finite numbers"
     if max(start, end) > MAX_SECONDS:
         return None, "Times are too large"
-    # Judged as FFmpeg will receive them, to the millisecond: 9.9999 passed as a
-    # start in a 10 s file and reached FFmpeg as "-ss 9.999 -t 0.000".
-    start, end = round(start, 3), round(end, 3)
-    if start < 0:
+    if start < 0:  # before rounding: -0.0004 rounds to -0.0, which is not < 0
         return None, "The start time cannot be negative"
+    # Judged as FFmpeg will receive them, to the millisecond, clamp included:
+    # 9.9999 passed as a start in a 10 s file and reached FFmpeg as
+    # "-ss 9.999 -t 0.000", and so did an end clamped to an unrounded length.
+    start, end = round(start, 3), round(end, 3)
+    if media_duration:
+        length = round(media_duration, 3)
+        if start >= length:
+            return None, "The start time is past the end of the file"
+        end = min(end, length)
     if end <= start:
         return None, "The end time must come after the start"
-    if media_duration:
-        if start >= media_duration:
-            return None, "The start time is past the end of the file"
-        end = min(end, media_duration)
     return (start, end), None
 
 

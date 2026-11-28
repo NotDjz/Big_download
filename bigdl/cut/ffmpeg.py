@@ -75,10 +75,9 @@ def _cut_with_ffmpeg(cut_id, input_path, out_path, start, duration, temp_cleanup
     entry = cut_progress.get(cut_id)
     if not entry:
         # The client disconnected before we started: the SSE stream's finally
-        # has already removed the entry. Without this guard the KeyError skipped
-        # the cleanup and left the temporary file behind, up to 2 GB of it.
-        if temp_cleanup:
-            temp_cleanup.unlink(missing_ok=True)
+        # has already removed the entry (without this guard, a KeyError). The
+        # upload stays like after any cut that did not succeed; the hourly
+        # temp_uploads/ sweep removes it if nobody comes back.
         return
     q = entry["queue"]
 
@@ -168,13 +167,18 @@ def _cut_with_ffmpeg(cut_id, input_path, out_path, start, duration, temp_cleanup
         # FFmpeg can exit 0 having written nothing (a range past the end, after
         # seeking): stat() then raised FileNotFoundError, read as a missing FFmpeg.
         # A header with no frame is no output either (measured: 262 bytes for
-        # -ss past the last frame), and FFmpeg says so by never moving out_time.
+        # -ss past the last frame), and FFmpeg says so by never moving out_time:
+        # it stays N/A there, while a single frame already reports 32993 us.
         if furthest_us <= 0 or not out_path.is_file():
             fail("FFmpeg wrote no output")
             return
 
         if temp_cleanup:
-            temp_cleanup.unlink(missing_ok=True)
+            # Still open for the preview, say: the sweep gets it, the cut stands.
+            try:
+                temp_cleanup.unlink(missing_ok=True)
+            except OSError:
+                pass
         size = out_path.stat().st_size
         log.info(f"Cut done: {out_path.name} ({size / 1024 / 1024:.1f} MB)")
         _put_final(

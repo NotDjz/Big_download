@@ -96,7 +96,6 @@ def upload_for_cut():
 
     file_size = temp_path.stat().st_size
     duration = _get_media_duration(temp_path)
-    _upload_durations[temp_name] = duration
 
     if duration <= 0:
         temp_path.unlink(missing_ok=True)
@@ -106,6 +105,9 @@ def upload_for_cut():
             }
         ), 400
 
+    _upload_durations[temp_name] = (
+        duration  # after the check: a refused upload leaves nothing
+    )
     log.info(f"Upload for cut: {safe_name} ({file_size / 1024 / 1024:.1f} MB)")
     return jsonify(
         {
