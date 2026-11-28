@@ -35,6 +35,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import app  # noqa: E402  (the server is the subject of the test)
+from bigdl import jobs, web  # noqa: E402  (the kernel app.py is built on)
 
 ONLINE = "--online" in sys.argv
 # app.PORT is the single source of the port number across the whole project.
@@ -786,7 +787,7 @@ def _instagram_continue(cancel):
     ev = []
     while not entry["queue"].empty():
         ev.append(entry["queue"].get_nowait())
-    final = next((e for e in ev if e.get("status") in app.TERMINAL_STATUSES), {})
+    final = next((e for e in ev if e.get("status") in jobs.TERMINAL_STATUSES), {})
     images = [g for g in gets if g.startswith("https://img/")]
     shutil.rmtree(scratch, ignore_errors=True)
     return raised, len(images), final.get("status"), NB
@@ -880,7 +881,7 @@ def _cut_run(mode, template):
     ev = []
     while not q.empty():
         ev.append(q.get_nowait())
-    final = next((e for e in ev if e.get("status") in app.TERMINAL_STATUSES), {})
+    final = next((e for e in ev if e.get("status") in jobs.TERMINAL_STATUSES), {})
     progress = max(
         [e.get("percent", 0) for e in ev if e.get("status") == "progress"] or [0]
     )
@@ -974,7 +975,7 @@ def _stall_run(script):
     ev = []
     while not q.empty():
         ev.append(q.get_nowait())
-    final = next((e for e in ev if e.get("status") in app.TERMINAL_STATUSES), {})
+    final = next((e for e in ev if e.get("status") in jobs.TERMINAL_STATUSES), {})
     shutil.rmtree(scratch, ignore_errors=True)
     return final, entry["deadline"] - started, elapsed
 
@@ -1137,7 +1138,7 @@ def test_real_cancellation():
         ev = []
         while not q.empty():
             ev.append(q.get_nowait())
-        final = next((e for e in ev if e.get("status") in app.TERMINAL_STATUSES), {})
+        final = next((e for e in ev if e.get("status") in jobs.TERMINAL_STATUSES), {})
         res = (
             started,
             final.get("status"),
@@ -1397,7 +1398,7 @@ def main():
         app.cut_progress.clear()
         # The rate limiter is a third: past 10 POSTs a minute, a section would
         # take a 429 that has nothing to do with its subject.
-        app._request_times.clear()
+        web._request_times.clear()
     if not ONLINE:
         print("\n  (network tests skipped; pass --online to include them)")
 
