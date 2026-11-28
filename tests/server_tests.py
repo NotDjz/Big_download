@@ -173,6 +173,7 @@ def test_sec_fetch_site():
 # ===================================================== path security
 def test_sanitize():
     section('sanitize_filename and containment')
+    check('THROWAWAY: proves the tests job can fail', False)
     sf = app.sanitize_filename
     cases = [
         # Inner '..' must NOT be mangled: stripped of a separator they no
