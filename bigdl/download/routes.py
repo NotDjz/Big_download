@@ -44,8 +44,15 @@ def start_download():
         if not _rate_limit_check():
             return jsonify({"error": "Too many requests. Give it a moment."}), 429
 
-        data = request.get_json()
+        # silent, and an object or nothing: a null body was a 500 from .get(), not the "Missing URL" 400.
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            data = {}
         url = data.get("url")
+        if not isinstance(
+            url, str
+        ):  # a number or a list reached urlparse and raised: a 500
+            url = None
         download_type = data.get("type", "youtube")
         quality = data.get("quality")
 
@@ -108,8 +115,13 @@ def progress_stream(download_id):
 def get_video_info():
     """Metadata for one URL, plus the formats it can be downloaded in."""
     try:
-        data = request.get_json()
-        url = data.get("url")
+        # silent, or {}: a null or non-JSON body is the "Missing URL" 400, not a 500 from .get().
+        data = request.get_json(silent=True)
+        url = data.get("url") if isinstance(data, dict) else None
+        if not isinstance(
+            url, str
+        ):  # a number or a list reached urlparse and raised: a 500
+            url = None
 
         if not url:
             return jsonify({"error": "Missing URL"}), 400
@@ -153,9 +165,10 @@ def get_video_info():
             raise Exception("Could not extract the information")
 
         # Pull out the resolution on offer
-        height = info.get("height", 0)
-        width = info.get("width", 0)
-        fps = info.get("fps", 0)
+        # `or 0`: yt-dlp can return None, not just omit the key, and `>=` on None was a 500.
+        height = info.get("height") or 0
+        width = info.get("width") or 0
+        fps = info.get("fps") or 0
 
         # Work out the quality label
         if height >= 2160:
@@ -172,7 +185,7 @@ def get_video_info():
             quality = f"{height}p" if height > 0 else "Unknown"
 
         # Collect the available qualities
-        formats = info.get("formats", [])
+        formats = info.get("formats") or []  # present but None, like height
         # An Instagram photo post does not always fail extraction: when it
         # succeeds, no Photo button was left, since _is_photo is only set on the
         # exception branch.

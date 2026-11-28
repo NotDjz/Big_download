@@ -14,6 +14,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions: [Sem
   says FFmpeg wrote no output.
 - A file with a very long name could be uploaded but not previewed or cut.
 - Two cuts of the same file started a moment apart could get the same name and overwrite each other.
+- The library could go blank when a file disappeared while it was being listed, and Windows files such as
+  desktop.ini showed up as videos that would not play.
+- Deleting a file that is still open now says so instead of failing with an unreadable error.
+- The check that keeps every play, delete and reveal request inside its own folder compared names as text, so a
+  sibling folder whose name started the same way could pass for it; it now compares real paths.
+- Looking up or starting a download with an empty request, or on a video whose resolution is unknown, no longer
+  ends in a server error.
 
 ## [2.3.2] - 2026-11-28
 

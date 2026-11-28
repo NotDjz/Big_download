@@ -15,6 +15,7 @@ from bigdl.config import (
 from bigdl.jobs import (
     _sweep_old_files,
 )
+from bigdl.library.rules import IMAGE_EXTS, LEGACY_FOLDERS, PARTIAL_EXTS
 
 
 def _sweep_stale_partials():
@@ -26,8 +27,8 @@ def _sweep_stale_partials():
     startup, when no download is running.
     """
     for folder in (VIDEOS_FOLDER, MUSIC_FOLDER, PHOTOS_FOLDER):
-        for pattern in ("*.part", "*.ytdl", "*.temp", "*.tmp"):
-            for f in folder.glob(pattern):
+        for ext in PARTIAL_EXTS:
+            for f in folder.glob("*" + ext):
                 try:
                     f.unlink()
                 except OSError:
@@ -45,12 +46,11 @@ def _sweep_work_folder():
 
 def _migrate_legacy_folders():
     """Move files from the old folder names into the current structure."""
+    folders = {"Videos": VIDEOS_FOLDER, "Music": MUSIC_FOLDER}
     migrations = [
-        (DOWNLOAD_FOLDER / "YouTube", VIDEOS_FOLDER),
-        (DOWNLOAD_FOLDER / "YouTube_MP3", MUSIC_FOLDER),
-        (DOWNLOAD_FOLDER / "Reseaux_Sociaux", VIDEOS_FOLDER),
+        (DOWNLOAD_FOLDER / name, folders[category])
+        for name, category in LEGACY_FOLDERS.items()
     ]
-    image_exts = (".jpg", ".jpeg", ".png", ".webp", ".gif")
     moved = 0
     for src_folder, dest_folder in migrations:
         if not src_folder.exists():
@@ -58,7 +58,7 @@ def _migrate_legacy_folders():
         for f in src_folder.iterdir():
             if not f.is_file():
                 continue
-            if f.suffix.lower() in image_exts:
+            if f.suffix.lower() in IMAGE_EXTS:
                 target = PHOTOS_FOLDER / f.name
             else:
                 target = dest_folder / f.name

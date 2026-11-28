@@ -37,6 +37,7 @@ from bigdl.jobs import (
     _put_progress,
     download_progress,
 )
+from bigdl.library.rules import IMAGE_EXTS, VIDEO_EXTS
 
 
 def _get_output_folder(download_type):
@@ -241,14 +242,13 @@ def _run_download(download_id, url, download_type, quality=None):
                 filename = ydl.prepare_filename(info)
                 file_path = Path(filename)
                 if not file_path.exists():
-                    for ext in (".mp4", ".webm", ".mkv", ".webp", ".jpg", ".png"):
+                    for ext in VIDEO_EXTS + IMAGE_EXTS:
                         candidate = Path(filename).with_suffix(ext)
                         if candidate.exists():
                             file_path = candidate
                             break
 
-                image_exts = (".webp", ".png", ".gif", ".jpg", ".jpeg")
-                if file_path.exists() and file_path.suffix.lower() in image_exts:
+                if file_path.exists() and file_path.suffix.lower() in IMAGE_EXTS:
                     if file_path.suffix.lower() != ".jpg":
                         file_path = _convert_to_jpg(file_path)
                     if (
