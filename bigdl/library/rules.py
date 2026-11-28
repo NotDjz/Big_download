@@ -1,7 +1,50 @@
-"""The library's rules, with no I/O: which names are safe to put in a folder."""
+"""The library's rules, with no I/O: which names are safe to put in a folder, which files are media, and
+whether a path stays inside its folder."""
 
 import re
-from os.path import splitext
+from os.path import commonpath, normcase, splitext
+
+# One place for these lists: the listing, the startup sweep, the legacy migration
+# and the cut each had their own copy, and a type added to one would have been
+# hidden by the listing yet never swept, or swept yet still listed.
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+AUDIO_EXTS = (".mp3", ".m4a", ".wav", ".flac", ".ogg")
+VIDEO_EXTS = (".mp4", ".webm", ".mkv", ".mov", ".avi", ".m4v")
+# Intermediate files are not media: they showed up as openable rows and the
+# player failed on them.
+PARTIAL_EXTS = (".part", ".ytdl", ".temp", ".tmp")
+# Folder names from before 2.0, still read and migrated.
+LEGACY_FOLDERS = ("YouTube", "YouTube_MP3", "Reseaux_Sociaux")
+
+
+def media_type(name):
+    """'video', 'audio' or 'photo' for a media file name; None for anything else.
+
+    An allowlist: anything unknown fell through to 'video', so desktop.ini and
+    Thumbs.db were listed as videos the player could not open.
+    """
+    ext = splitext(name)[1].lower()
+    if ext in IMAGE_EXTS:
+        return "photo"
+    if ext in AUDIO_EXTS:
+        return "audio"
+    if ext in VIDEO_EXTS:
+        return "video"
+    return None
+
+
+def is_inside(path, folder):
+    """True if `path` lies within `folder`: both resolved, compared as Windows does (case-insensitively).
+
+    Not str.startswith: that let ...\\Videos2\\x pass for ...\\Videos, the last
+    guard of every <category>/<filename> route, reachable through a link.
+    """
+    path, folder = normcase(path), normcase(folder)
+    try:
+        return path != folder and commonpath([path, folder]) == folder
+    except ValueError:  # different drives
+        return False
+
 
 # The longest stem a name may keep: sanitize_filename truncates to it, and what
 # the server composes around a name (an upload's id prefix, a cut's _v2) must

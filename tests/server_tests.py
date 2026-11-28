@@ -49,6 +49,7 @@ from bigdl.cut import rules as cut_rules  # noqa: E402
 from bigdl.download import instagram, ytdlp  # noqa: E402
 from bigdl.download import routes as dl_routes  # noqa: E402
 from bigdl.download import rules as dl_rules  # noqa: E402
+from bigdl.library import routes as library_routes  # noqa: E402
 from bigdl.library import rules as lib_rules  # noqa: E402
 
 ONLINE = "--online" in sys.argv
@@ -1492,6 +1493,135 @@ def test_cut_hardening():
     shutil.rmtree(scratch, ignore_errors=True)
 
 
+def test_library_rules():
+    section("Library: containment and media types, the rules on their own")
+    inside = lib_rules.is_inside
+    check(
+        "a file in its folder is inside", inside(r"C:\d\Videos\a.mp4", r"C:\d\Videos")
+    )
+    # The final path guard was str.startswith: ...\Videos2\x passed for ...\Videos (reachable through a link).
+    check(
+        "a sibling folder sharing the prefix is not",
+        not inside(r"C:\d\Videos2\a.mp4", r"C:\d\Videos"),
+    )
+    check("the parent is not", not inside(r"C:\d\a.mp4", r"C:\d\Videos"))
+    check(
+        "case does not matter on Windows", inside(r"c:\D\videos\a.mp4", r"C:\d\Videos")
+    )
+
+    kind = lib_rules.media_type
+    for name, expected in (
+        ("a.mp4", "video"),
+        ("b.MKV", "video"),
+        ("c.mp3", "audio"),
+        ("d.jpg", "photo"),
+        # Junk Windows writes into folders was listed as a video the player could not open.
+        ("desktop.ini", None),
+        ("Thumbs.db", None),
+        ("e.part", None),
+    ):
+        check(f"media_type({name}) = {expected}", kind(name) == expected, kind(name))
+
+
+def test_library_hardening():
+    section("Library: the routes survive a moving, locked or odd folder")
+    root = Path(tempfile.mkdtemp(prefix="lib-"))
+    videos, music, photos = root / "Videos", root / "Music", root / "Photos"
+    for f in (videos, music, photos):
+        f.mkdir()
+    (videos / "a.mp4").write_bytes(b"v")
+    (videos / "b.mp4.part").write_bytes(b"p")
+    (videos / "desktop.ini").write_bytes(b"[.ShellClassInfo]")
+    (videos / "folder.mp4").mkdir()
+
+    folders = dict(
+        VIDEOS_FOLDER=videos,
+        MUSIC_FOLDER=music,
+        PHOTOS_FOLDER=photos,
+        DOWNLOAD_FOLDER=root,
+    )
+    with patched_on(library_routes, **folders):
+        names = sorted(
+            f["name"] for f in client.get("/list-downloads", headers=H).get_json()
+        )
+        check("only media is listed", names == ["a.mp4"], names)
+
+        # A file that vanishes between the directory read and its stat (deleted, or replaced by a download's
+        # final move) took the whole listing down with a 500.
+        class Vanished:
+            name, suffix = "gone.mp4", ".mp4"
+
+            def is_file(self):
+                return True
+
+            def stat(self):
+                raise FileNotFoundError("gone")
+
+        class Moving:
+            def exists(self):
+                return True
+
+            def iterdir(self):
+                return iter([Vanished(), videos / "a.mp4"])
+
+        with patched_on(library_routes, VIDEOS_FOLDER=Moving()):
+            r = client.get("/list-downloads", headers=H)
+        check(
+            "a vanished file does not take the listing down",
+            r.status_code == 200 and [f["name"] for f in r.get_json()] == ["a.mp4"],
+            f"code={r.status_code}",
+        )
+
+        # Windows refuses to delete an open file: that was a raw 500 page the client could not parse.
+        with open(videos / "a.mp4", "rb"):
+            r = client.delete("/delete/Videos/a.mp4", headers=H)
+        check(
+            "a locked file answers 409 in JSON",
+            r.status_code == 409 and (r.get_json(silent=True) or {}).get("error"),
+            f"code={r.status_code}",
+        )
+        check("and is still there", (videos / "a.mp4").exists())
+        r = client.delete("/delete/Videos/folder.mp4", headers=H)
+        check(
+            "a folder is not a file to delete",
+            r.status_code == 404,
+            f"code={r.status_code}",
+        )
+    shutil.rmtree(root, ignore_errors=True)
+
+
+def test_download_input():
+    section("Download: odd bodies and odd metadata are not 500s")
+    for route in ("/start-download", "/get-info"):
+        r = client.post(route, headers=H, data="null", content_type="application/json")
+        check(
+            f"{route} with a null body is a 400",
+            r.status_code == 400,
+            f"code={r.status_code}",
+        )
+
+    # yt-dlp can return height None (not absent): `>=` on None raised and /get-info answered 500.
+    info = {
+        "title": "t",
+        "height": None,
+        "width": None,
+        "fps": None,
+        "formats": [],
+        "duration": 3,
+    }
+    with fake_ydl(fake_ydl_class(lambda url, download: info)):
+        r = client.post(
+            "/get-info",
+            headers=H,
+            json={"url": "https://www.youtube.com/watch?v=abcdefghijk"},
+        )
+    check(
+        "None dimensions still give formats",
+        r.status_code == 200,
+        f"code={r.status_code}",
+    )
+
+
 def test_cut_progress_rule():
     section("Cut: the progress rule, on its own")
     rule = cut_rules._cut_progress
@@ -1897,6 +2027,9 @@ OFFLINE = [
     test_architecture,
     test_cut_bounds_rule,
     test_cut_hardening,
+    test_library_rules,
+    test_library_hardening,
+    test_download_input,
     test_cut_progress_rule,
     test_cut_stall_timeout,
     test_landing_page,
