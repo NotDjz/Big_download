@@ -1,4 +1,3 @@
-import json
 import os
 import platform
 import queue
@@ -23,26 +22,22 @@ from bigdl.config import (
     BASE_DIR,
     BUNDLE_DIR,
     CANCEL_MSG,
-    CUT_TIMEOUT,
-    CUT_TIMEOUT_MSG,
     DOWNLOAD_FOLDER,
     DOWNLOAD_TIMEOUT,
     EXPLORER,
     FFMPEG_DIR,
-    FFMPEG_PATH,
-    FFPROBE_PATH,
     MAX_VIDEO_SIZE,
     MUSIC_FOLDER,
     PHOTOS_FOLDER,
     PLAYLIST_SCAN,
     PORT,
     SSE_GRACE,
-    TEMP_FOLDER,
     TIMEOUT_MSG,
     VIDEOS_FOLDER,
     WORK_FOLDER,
     log,
 )
+from bigdl.cut.routes import bp as cut_routes
 from bigdl.jobs import (
     DownloadAborted,
     _kill_quietly,
@@ -52,6 +47,7 @@ from bigdl.jobs import (
     cut_progress,
     download_progress,
 )
+from bigdl.library.rules import sanitize_filename
 from bigdl.web import (
     _rate_limit_check,
     _reject_foreign_origin,
@@ -71,35 +67,7 @@ app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024  # 2 GB
 app.errorhandler(413)(request_entity_too_large)
 app.before_request(_reject_foreign_origin)
 app.after_request(_security_headers)
-
-
-def _next_versioned_name(folder, stem, ext):
-    """Next free name: stem_v2.ext, stem_v3.ext, and so on."""
-    version = 2
-    while True:
-        name = f"{stem}_v{version}{ext}"
-        if not (folder / name).exists():
-            return name
-        version += 1
-
-
-def sanitize_filename(filename):
-    """Scrub a filename so it cannot escape its folder.
-
-    Replacing the separators is enough to prevent any escape: stripped of a
-    separator, '..' no longer names a parent. So the inner dots of a legitimate
-    name are left alone ('Wait... What.mp4'), which otherwise stopped matching
-    the file yt-dlp had written and returned 404 on playback, deletion and
-    reveal-in-explorer alike.
-    """
-    filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
-    filename = filename.rstrip(" .")
-    if not filename:
-        filename = "_"
-    if len(filename) > 200:
-        name, ext = os.path.splitext(filename)
-        filename = name[:200] + ext
-    return filename
+app.register_blueprint(cut_routes)
 
 
 def validate_youtube_url(url):
@@ -1196,180 +1164,6 @@ def stream_file(category, filename):
     return jsonify({"error": "File not found"}), 404
 
 
-def _watch_cut(entry, proc, timed_out):
-    """Kill FFmpeg once the cut's deadline passes, checked once a second.
-
-    On its own thread: the deadline used to be evaluated inside the read loop,
-    so a stuck FFmpeg that wrote no further line to stderr was never killed.
-    The reader pushes the deadline on progress; this only reads it, like the
-    SSE net.
-    """
-    while proc.poll() is None:
-        if time.time() > entry["deadline"]:
-            timed_out.set()
-            _kill_quietly(proc)
-            return
-        time.sleep(1)
-
-
-def _cut_progress(line, last_us, duration):
-    """Read one line of FFmpeg's -progress output: the cut's progress rule, no I/O.
-
-    Returns None for a line that carries no time (another key, or N/A before the
-    first frame). Otherwise (last_us, percent, advanced): the furthest time seen,
-    its percentage of `duration` (at most 100.0, 0.0 without a duration), and
-    whether this line moved past last_us. Only an advancing time counts as
-    progress: FFmpeg keeps reporting the same one while it is stuck. The
-    percentage follows the furthest time, so the bar never steps back, and a
-    negative time (AV_NOPTS_VALUE, before the first frame) never goes below the
-    caller's starting last_us of -1.
-    """
-    if not line.startswith("out_time_us="):
-        return None
-    try:
-        us = int(line.split("=")[1].strip())
-    except ValueError:
-        return None
-    furthest = max(us, last_us)
-    pct = min(furthest / 1_000_000 / duration, 1.0) if duration > 0 else 0.0
-    return furthest, round(pct * 100, 1), us > last_us
-
-
-def _pump_cut_progress(proc, entry, q, duration):
-    """Relay FFmpeg's progress lines, pushing the deadline when the cut advances."""
-    last_us = -1
-    for line in proc.stderr:
-        progress = _cut_progress(line, last_us, duration)
-        if progress is None:
-            continue
-        last_us, percent, advanced = progress
-        if advanced:
-            entry["deadline"] = time.time() + CUT_TIMEOUT
-        # put_nowait: removing the entry in the finally orphans the queue as
-        # soon as the client leaves, and a blocking put then froze the worker
-        # (stderr no longer drained, cleanup never done) until the process died.
-        _put_progress(q, {"status": "progress", "percent": percent})
-
-
-def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=None):
-    """Run FFmpeg on a worker thread, reading progress off stderr."""
-    entry = cut_progress.get(cut_id)
-    if not entry:
-        # The client disconnected before we started: the SSE stream's finally
-        # has already removed the entry. Without this guard the KeyError skipped
-        # the cleanup and left the temporary file behind, up to 2 GB of it.
-        if temp_cleanup:
-            temp_cleanup.unlink(missing_ok=True)
-        return
-    q = entry["queue"]
-
-    def fail(message, status="error"):
-        """Leaving with nothing to show: one place to clean up.
-
-        A cancellation keeps the source file. Stopping a cut is precisely what
-        you do to redo it with different bounds: deleting the source answered
-        404 "source file not found" when relaunching, and killed the preview on
-        the way. The hourly temp_uploads/ sweep takes care of it instead.
-        """
-        doomed = (out_path,) if status == "cancelled" else (out_path, temp_cleanup)
-        for path in doomed:
-            if path:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-        _put_final(q, {"status": status, "message": message})
-
-    try:
-        cmd = [
-            FFMPEG_PATH,
-            "-y",
-            "-ss",
-            str(start),
-            "-i",
-            str(input_path),
-            "-t",
-            str(duration),
-            # About 7x faster than the default 'medium', measured on 1080p.
-            "-preset",
-            "veryfast",
-            "-avoid_negative_ts",
-            "make_zero",
-            "-progress",
-            "pipe:2",
-            str(out_path),
-        ]
-        # stdout to DEVNULL: nothing was reading it, and a pipe that is never
-        # drained can block FFmpeg as soon as it fills up.
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            # Not the locale codec: cp1252 choked on UTF-8 metadata in the
-            # banner, and the error path deleted the source mid-cut.
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            **_SUBPROCESS_FLAGS,
-        )
-        # Published so /cancel can kill it. Unlike yt-dlp, FFmpeg is a
-        # subprocess: stopping it is immediate and certain.
-        entry["proc"] = proc
-        # Re-read the flag right after: a cancellation landing between
-        # creating the process and publishing it would have seen no process to
-        # kill, and FFmpeg would have re-encoded the whole clip for nothing.
-        if entry.get("cancelled"):
-            _kill_quietly(proc)
-
-        timed_out = threading.Event()
-        threading.Thread(
-            target=_watch_cut, args=(entry, proc, timed_out), daemon=True
-        ).start()
-        _pump_cut_progress(proc, entry, q, duration)
-        proc.wait()
-
-        if entry.get("cancelled"):
-            fail("Cut stopped", status="cancelled")
-            return
-
-        # returncode too: FFmpeg may finish on its own between the watchdog's
-        # poll and its kill, and a finished cut must not be thrown away.
-        if timed_out.is_set() and proc.returncode != 0:
-            fail(CUT_TIMEOUT_MSG)
-            return
-
-        if proc.returncode != 0:
-            fail("FFmpeg failed while cutting")
-            return
-
-        if temp_cleanup:
-            temp_cleanup.unlink(missing_ok=True)
-        size = out_path.stat().st_size
-        log.info(f"Cut done: {out_path.name} ({size / 1024 / 1024:.1f} MB)")
-        _put_final(
-            q,
-            {
-                "status": "complete",
-                "filename": out_path.name,
-                "size": size,
-                "message": f"Cut finished: {out_path.name}",
-            },
-        )
-    except FileNotFoundError:
-        fail("FFmpeg not found")
-    except Exception as e:
-        log.error(f"Cut error: {e}")
-        fail(str(e))
-
-
-@app.route("/cut-progress/<cut_id>")
-def cut_progress_stream(cut_id):
-    """SSE endpoint carrying a cut's progress."""
-    return _sse_response(
-        cut_progress, cut_id, "Unknown cut", poll=15, deadline_key="deadline"
-    )
-
-
 def _sweep_stale_partials():
     """Remove orphaned partial files from the output folders.
 
@@ -1394,157 +1188,6 @@ def _sweep_work_folder():
     never reach a job that is still alive.
     """
     _sweep_old_files(WORK_FOLDER, DOWNLOAD_TIMEOUT + SSE_GRACE)
-
-
-def _sweep_temp_uploads():
-    """Purge abandoned uploads.
-
-    A file was only deleted along the cut path: walking away through "Change
-    file" left it on disk indefinitely, up to 2 GB each time.
-    """
-    _sweep_old_files(TEMP_FOLDER, 3600)
-
-
-@app.route("/upload-for-cut", methods=["POST"])
-def upload_for_cut():
-    """Receive a file so it can be previewed before cutting."""
-    _sweep_temp_uploads()
-    if "file" not in request.files:
-        return jsonify({"error": "No file sent"}), 400
-
-    file = request.files["file"]
-    if not file.filename:
-        return jsonify({"error": "Empty filename"}), 400
-
-    ext = Path(file.filename).suffix.lower()
-    if ext not in (
-        ".mp3",
-        ".mp4",
-        ".mkv",
-        ".webm",
-        ".m4a",
-        ".wav",
-        ".flac",
-        ".ogg",
-        ".avi",
-        ".mov",
-    ):
-        return jsonify({"error": f"Unsupported format: {ext}"}), 400
-
-    safe_name = sanitize_filename(file.filename)
-    temp_id = str(uuid.uuid4())[:8]
-    temp_name = f"{temp_id}_{safe_name}"
-    temp_path = TEMP_FOLDER / temp_name
-
-    file.save(str(temp_path))
-
-    file_size = temp_path.stat().st_size
-    duration = _get_media_duration(temp_path)
-
-    if duration <= 0:
-        temp_path.unlink(missing_ok=True)
-        return jsonify(
-            {
-                "error": "Could not read the file duration. Unsupported format, or the file is damaged."
-            }
-        ), 400
-
-    log.info(f"Upload for cut: {safe_name} ({file_size / 1024 / 1024:.1f} MB)")
-    return jsonify(
-        {
-            "success": True,
-            "temp_name": temp_name,
-            "original_name": file.filename,
-            "size": file_size,
-            "duration": duration,
-        }
-    )
-
-
-@app.route("/stream-temp/<filename>")
-def stream_temp(filename):
-    """Serve an uploaded file back for the preview."""
-    safe_name = sanitize_filename(filename)
-    file_path = (TEMP_FOLDER / safe_name).resolve()
-    if not str(file_path).startswith(str(TEMP_FOLDER.resolve())):
-        return jsonify({"error": "Access denied"}), 403
-    if not file_path.exists():
-        return jsonify({"error": "File not found"}), 404
-    return send_file(file_path)
-
-
-@app.route("/cut-uploaded", methods=["POST"])
-def cut_uploaded():
-    """Cut an uploaded file and hand back the id its progress stream will use."""
-    data = request.get_json()
-    temp_name = data.get("temp_name")
-    start = data.get("start", 0)
-    end = data.get("end")
-    original_name = data.get("original_name", "")
-
-    if not temp_name or end is None:
-        return jsonify({"error": "Missing parameters"}), 400
-    try:
-        start = float(start)
-        end = float(end)
-    except (TypeError, ValueError):
-        return jsonify({"error": "Times must be numbers"}), 400
-    if end <= start:
-        return jsonify({"error": "The end time must come after the start"}), 400
-
-    safe_temp = sanitize_filename(temp_name)
-    temp_path = (TEMP_FOLDER / safe_temp).resolve()
-    if not str(temp_path).startswith(str(TEMP_FOLDER.resolve())):
-        return jsonify({"error": "Access denied"}), 403
-    if not temp_path.exists():
-        return jsonify({"error": "Source file not found"}), 404
-
-    stem = Path(original_name).stem if original_name else temp_path.stem
-    stem = sanitize_filename(stem)
-    ext = temp_path.suffix
-
-    audio_exts = (".mp3", ".m4a", ".wav", ".flac", ".ogg")
-    dest_folder = MUSIC_FOLDER if ext.lower() in audio_exts else VIDEOS_FOLDER
-    out_name = _next_versioned_name(dest_folder, stem, ext)
-    out_path = dest_folder / out_name
-
-    cut_id = str(uuid.uuid4())[:8]
-    duration = end - start
-    cut_progress[cut_id] = {
-        "queue": queue.Queue(maxsize=200),
-        "deadline": time.time() + CUT_TIMEOUT,
-        "cancelled": False,
-    }
-    thread = threading.Thread(
-        target=_run_ffmpeg_cut,
-        args=(cut_id, temp_path, out_path, start, duration, temp_path),
-        daemon=True,
-    )
-    thread.start()
-    return jsonify({"cut_id": cut_id})
-
-
-def _get_media_duration(filepath):
-    """Read a media file's duration with ffprobe."""
-    try:
-        cmd = [
-            FFPROBE_PATH,
-            "-v",
-            "quiet",
-            "-print_format",
-            "json",
-            "-show_format",
-            str(filepath),
-        ]
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30, **_SUBPROCESS_FLAGS
-        )
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            return float(data.get("format", {}).get("duration", 0))
-    except Exception:
-        pass
-    return 0
 
 
 @app.route("/open-folder", methods=["POST"])
