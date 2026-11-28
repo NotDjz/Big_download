@@ -18,8 +18,10 @@ import urllib.request
 import zipfile
 
 VERSION = "8.1.1"
-URL = (f"https://github.com/GyanD/codexffmpeg/releases/download/{VERSION}/"
-       f"ffmpeg-{VERSION}-essentials_build.zip")
+URL = (
+    f"https://github.com/GyanD/codexffmpeg/releases/download/{VERSION}/"
+    f"ffmpeg-{VERSION}-essentials_build.zip"
+)
 ZIP_SHA256 = "6f58ce889f59c311410f7d2b18895b33c03456463486f3b1ebc93d97a0f54541"
 BINARIES = {
     "ffmpeg.exe": "228d7a8556258de907fdb55f36850078ebc7680b84ec30d84ea02e99bec1d1eb",
@@ -48,7 +50,9 @@ def main():
     print(f"Downloading FFmpeg {VERSION} (~105 MB)...")
     data = urllib.request.urlopen(URL, timeout=120).read()
     if _sha256(data) != ZIP_SHA256:
-        print(f"ERROR: FFmpeg zip SHA-256 is {_sha256(data)}, expected {ZIP_SHA256}. Refusing to use it.")
+        print(
+            f"ERROR: FFmpeg zip SHA-256 is {_sha256(data)}, expected {ZIP_SHA256}. Refusing to use it."
+        )
         sys.exit(1)
     print("Zip SHA-256 verified. Extracting ffmpeg.exe and ffprobe.exe...")
 
@@ -58,7 +62,9 @@ def main():
             if name in BINARIES:
                 blob = zf.read(entry)
                 if _sha256(blob) != BINARIES[name]:
-                    print(f"ERROR: {name} inside the verified zip does not match its pinned hash.")
+                    print(
+                        f"ERROR: {name} inside the verified zip does not match its pinned hash."
+                    )
                     sys.exit(1)
                 print(f"  -> {name}")
                 with open(os.path.join(DEST, name), "wb") as dst:

@@ -5,6 +5,7 @@
 Requires Node 22+ (for the global WebSocket) and Chrome or Edge. It touches no
 file in the repository; the Chrome profile is disposable, created under temp.
 """
+
 import os
 import shutil
 import socket
@@ -53,7 +54,9 @@ def main():
     # would answer the wait, and the suite would test a different process than
     # it believes, reporting all green for code that was never loaded.
     if _busy(app.PORT):
-        print(f"FAILED: port {app.PORT} is already taken. Close BIG DL before running the test.")
+        print(
+            f"FAILED: port {app.PORT} is already taken. Close BIG DL before running the test."
+        )
         return 2
     if _busy(CDP_PORT):
         print(f"FAILED: port {CDP_PORT} is already taken (a forgotten Chrome?).")
@@ -75,20 +78,33 @@ def main():
     profile = tempfile.mkdtemp(prefix="bigdl-uismoke-")
     proc = subprocess.Popen(
         [
-            chrome, "--headless=new", f"--remote-debugging-port={CDP_PORT}",
-            f"--user-data-dir={profile}", "--no-first-run", "--no-default-browser-check",
-            "--autoplay-policy=no-user-gesture-required", "--disable-gpu", "--mute-audio",
+            chrome,
+            "--headless=new",
+            f"--remote-debugging-port={CDP_PORT}",
+            f"--user-data-dir={profile}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--autoplay-policy=no-user-gesture-required",
+            "--disable-gpu",
+            "--mute-audio",
         ],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **app._SUBPROCESS_FLAGS,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        **app._SUBPROCESS_FLAGS,
     )
     try:
         if not _wait(CDP_PORT):
             print("FAILED: Chrome is not exposing CDP")
             return 2
-        env = {**os.environ, "CDP_PORT": str(CDP_PORT), "APP_URL": f"http://localhost:{app.PORT}"}
+        env = {
+            **os.environ,
+            "CDP_PORT": str(CDP_PORT),
+            "APP_URL": f"http://localhost:{app.PORT}",
+        }
         try:
             return subprocess.call(
-                ["node", str(ROOT / "tests" / "ui_smoke.mjs")], env=env, timeout=300)
+                ["node", str(ROOT / "tests" / "ui_smoke.mjs")], env=env, timeout=300
+            )
         except FileNotFoundError:
             print("FAILED: node not found on PATH (Node 22+ required)")
             return 2
@@ -107,7 +123,7 @@ def main():
         # hundred MB in temp_uploads/ until the hourly sweep. No risk to work in
         # progress: this function refuses to start when the application's port
         # is already taken.
-        for leftover in app.TEMP_FOLDER.glob('*'):
+        for leftover in app.TEMP_FOLDER.glob("*"):
             if leftover.is_file():
                 try:
                     leftover.unlink()
