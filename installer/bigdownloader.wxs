@@ -18,11 +18,12 @@
          after an upgrade the bootloader, or the old app itself, kept running and held the old exe, which msiexec
          moved to C:\Config.Msi for deletion at reboot; after an uninstall Restart Manager relaunched the app.
          So the installer closes it itself: a close message, 5 s, then whatever is left is terminated, before any
-         file is replaced or removed. It targets by name, so a portable BigDownloader.exe running elsewhere during
-         an install is closed too. -->
+         file is replaced or removed. It targets by name, so it only runs when an installed copy exists (update,
+         repair, uninstall): a first install never touches a portable BigDownloader.exe running elsewhere. -->
     <Property Id="MSIDISABLERMRESTART" Value="1" />
     <util:CloseApplication Id="CloseBigDownloader" Target="BigDownloader.exe" CloseMessage="yes"
-                           RebootPrompt="no" TerminateProcess="1" Timeout="5" />
+                           RebootPrompt="no" TerminateProcess="1" Timeout="5"
+                           Condition="Installed OR WIX_UPGRADE_DETECTED" />
     <!-- Its default slot is before InstallFiles, which on an uninstall comes after RemoveFiles: too late. Moved to the
          start of the transaction, before any file is removed or written. -->
     <InstallExecuteSequence>
