@@ -15,13 +15,14 @@ the same language. Violet lives on elsewhere: it is --brand, the colour of the
 
     py create_icon.py
 """
+
 import io
 import struct
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-SS = 8                              # supersampling avant reduction
+SS = 8  # supersampling avant reduction
 COPPER_TOP = (242, 155, 83, 255)
 COPPER_BOT = (229, 137, 63, 255)
 INK = (26, 18, 7, 255)
@@ -31,10 +32,10 @@ INK = (26, 18, 7, 255)
 # Bare names: Pillow looks in %SystemRoot%\Fonts, which avoids hardcoding a
 # C:\Windows that is not guaranteed to exist.
 FONT_CANDIDATES = (
-    'seguibl.ttf',      # Segoe UI Black
-    'ariblk.ttf',       # Arial Black
-    'segoeuib.ttf',     # Segoe UI Bold
-    'arialbd.ttf',      # Arial Bold
+    "seguibl.ttf",  # Segoe UI Black
+    "ariblk.ttf",  # Arial Black
+    "segoeuib.ttf",  # Segoe UI Bold
+    "arialbd.ttf",  # Arial Bold
 )
 
 
@@ -45,9 +46,7 @@ def _font_path():
             return name
         except OSError:
             continue
-    raise SystemExit(
-        'No bold font found among: ' + ', '.join(FONT_CANDIDATES)
-    )
+    raise SystemExit("No bold font found among: " + ", ".join(FONT_CANDIDATES))
 
 
 def _fit(draw, text, path, target_w, ceiling):
@@ -65,12 +64,12 @@ def _fit(draw, text, path, target_w, ceiling):
     return best
 
 
-def create_icon_image(size, font_path, text='DL'):
+def create_icon_image(size, font_path, text="DL"):
     hi = size * SS
     pad = max(SS, int(hi * 0.02))
 
     # Ground: a copper gradient inside a rounded square
-    bg = Image.new('RGBA', (hi, hi))
+    bg = Image.new("RGBA", (hi, hi))
     draw = ImageDraw.Draw(bg)
     for y in range(hi):
         t = y / max(1, hi - 1)
@@ -78,20 +77,23 @@ def create_icon_image(size, font_path, text='DL'):
             [(0, y), (hi - 1, y)],
             fill=tuple(int(a + (b - a) * t) for a, b in zip(COPPER_TOP, COPPER_BOT)),
         )
-    mask = Image.new('L', (hi, hi), 0)
+    mask = Image.new("L", (hi, hi), 0)
     ImageDraw.Draw(mask).rounded_rectangle(
-        [pad, pad, hi - pad - 1, hi - pad - 1], radius=int(hi * 0.22), fill=255)
+        [pad, pad, hi - pad - 1, hi - pad - 1], radius=int(hi * 0.22), fill=255
+    )
     bg.putalpha(mask)
 
     # The monogram is centred optically on its ink box, not on the baseline:
     # otherwise the letters float upwards.
-    layer = Image.new('RGBA', (hi, hi), (0, 0, 0, 0))
+    layer = Image.new("RGBA", (hi, hi), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     font = _fit(d, text, font_path, int(hi * 0.72), hi)
     box = d.textbbox((0, 0), text, font=font)
     d.text(
         ((hi - (box[2] - box[0])) / 2 - box[0], (hi - (box[3] - box[1])) / 2 - box[1]),
-        text, font=font, fill=INK,
+        text,
+        font=font,
+        fill=INK,
     )
     img = Image.alpha_composite(bg, layer)
 
@@ -105,18 +107,18 @@ def save_ico(images, path):
     the per-size drawing, which is exactly what makes the 16 px legible.
     """
     buf = io.BytesIO()
-    buf.write(struct.pack('<HHH', 0, 1, len(images)))
+    buf.write(struct.pack("<HHH", 0, 1, len(images)))
     offset = 6 + 16 * len(images)
     entries, payloads = [], []
     for im in images:
         png = io.BytesIO()
-        im.save(png, format='PNG')
+        im.save(png, format="PNG")
         data = png.getvalue()
         payloads.append(data)
         # 0 means 256 in the ICO header
         w = im.width if im.width < 256 else 0
         h = im.height if im.height < 256 else 0
-        entries.append(struct.pack('<BBBBHHII', w, h, 0, 0, 1, 32, len(data), offset))
+        entries.append(struct.pack("<BBBBHHII", w, h, 0, 0, 1, 32, len(data), offset))
         offset += len(data)
     for entry in entries:
         buf.write(entry)
@@ -125,7 +127,7 @@ def save_ico(images, path):
     Path(path).write_bytes(buf.getvalue())
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Relative to the script and not to the working directory: run from
     # elsewhere, it dropped the files beside the caller and skipped docs/
     # without a word.
@@ -134,13 +136,19 @@ if __name__ == '__main__':
     font_path = _font_path()
     images = [create_icon_image(s, font_path) for s in sizes]
 
-    save_ico(images, root / 'icon.ico')
+    save_ico(images, root / "icon.ico")
     big = images[sizes.index(128)]
     # The icon's three consumers: the executable (icon.ico), the window's own
     # tab (static/icon.png) and the GitHub page (docs/icon.png). Forgetting the
     # second left the old violet logo inside the application itself.
-    for target in (root / 'icon.png', root / 'static' / 'icon.png', root / 'docs' / 'icon.png'):
+    for target in (
+        root / "icon.png",
+        root / "static" / "icon.png",
+        root / "docs" / "icon.png",
+    ):
         if target.parent.is_dir():
             big.save(target)
-    print('icon.ico (%d sizes), icon.png, static/icon.png and docs/icon.png written'
-          % len(sizes))
+    print(
+        "icon.ico (%d sizes), icon.png, static/icon.png and docs/icon.png written"
+        % len(sizes)
+    )

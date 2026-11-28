@@ -1,0 +1,5 @@
+# PEP 8 applied by ruff format (bobito standards, Python style). Lint: the classic pyflakes and
+# pycodestyle error set plus import order, enforced as errors by the CI tests job. Ruff 0.17 widened its
+# defaults (printf formatting, blind except...); pinning the set here keeps local and CI runs identical.
+[lint]
+select = ["E4", "E7", "E9", "F", "I"]

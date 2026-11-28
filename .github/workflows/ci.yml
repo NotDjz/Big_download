@@ -36,6 +36,11 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
+      # PEP 8 through ruff format, and the lint set ruff.toml selects. First, so that the runtime lock installed
+      # next is what the tests run against, even if the two locks ever disagree on a shared package.
+      - run: python -m pip install --require-hashes -r requirements-dev.txt
+      - run: python -m ruff format --check .
+      - run: python -m ruff check .
       # Exact versions, each checked by hash: what the release bundles.
       - run: python -m pip install --require-hashes -r requirements.txt
       # The pinned FFmpeg, checked by SHA-256 before extraction: the cut tests run the real one.
