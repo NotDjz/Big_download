@@ -13,10 +13,15 @@ Two rules, each born of an incident:
   runs the same code twice, once with the mechanism and once without. If both
   pass, the test is not measuring what it claims to measure.
 
-Monkeypatches are restored after every section: they apply to the `app` module
-itself, so without that the order of the tests would become load-bearing.
+Monkeypatches are restored after every section, or the order of the tests would
+become load-bearing. Patch the module that READS the name: since app.py was split
+into bigdl/, a name imported into a module is that module's own binding, so
+patching it on `app` changes nothing the code under test sees, silently.
+`patched(...)` is for what still lives in app.py; use `patched_on(<module>, ...)`
+for the rest (the stall test patches CUT_TIMEOUT on bigdl.cut.ffmpeg).
 """
 
+import ast
 import contextlib
 import io
 import os
@@ -35,7 +40,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import app  # noqa: E402  (the server is the subject of the test)
-from bigdl import jobs, web  # noqa: E402  (the kernel app.py is built on)
+from bigdl import config, jobs, web  # noqa: E402  (the kernel app.py is built on)
+from bigdl.cut import ffmpeg as cut_ffmpeg  # noqa: E402
+from bigdl.cut import rules as cut_rules  # noqa: E402
 
 ONLINE = "--online" in sys.argv
 # app.PORT is the single source of the port number across the whole project.
@@ -813,7 +820,7 @@ def _build_source(target):
     """A video long enough that there is time to cancel its cut."""
     subprocess.run(
         [
-            app.FFMPEG_PATH,
+            config.FFMPEG_PATH,
             "-y",
             "-f",
             "lavfi",
@@ -854,13 +861,13 @@ def _cut_run(mode, template):
     app.cut_progress[cut_id] = {
         "queue": q,
         "cancelled": False,
-        "deadline": time.time() + app.CUT_TIMEOUT,
+        "deadline": time.time() + config.CUT_TIMEOUT,
     }
     # In error mode: an extension FFmpeg refuses, so it exits non-zero.
     target = scratch / ("output.mp4" if mode == "cancel" else "output.unknownext")
 
     t = threading.Thread(
-        target=app._run_ffmpeg_cut,
+        target=cut_ffmpeg._run_ffmpeg_cut,
         args=(cut_id, source, target, 0, 40, source),
         daemon=True,
     )
@@ -963,9 +970,12 @@ def _stall_run(script):
     started = time.time()
     entry = {"queue": q, "cancelled": False, "deadline": started + 1}
     app.cut_progress[cut_id] = entry
-    with patched(CUT_TIMEOUT=1), patched_on(app.subprocess, Popen=fake_popen):
+    with (
+        patched_on(cut_ffmpeg, CUT_TIMEOUT=1),
+        patched_on(subprocess, Popen=fake_popen),
+    ):
         t = threading.Thread(
-            target=app._run_ffmpeg_cut,
+            target=cut_ffmpeg._run_ffmpeg_cut,
             args=(cut_id, scratch / "in.mp4", scratch / "out.mp4", 0, 10),
             daemon=True,
         )
@@ -980,9 +990,88 @@ def _stall_run(script):
     return final, entry["deadline"] - started, elapsed
 
 
+# Standard-library modules a rule may not use either: they reach a process, the disk, the network, a thread, the
+# clock, the interpreter or another module by name. `os` is among them: `from os.path import ...` is the one way in,
+# since it brings path arithmetic without os.remove or os.system.
+_RULE_IO = {
+    "subprocess",
+    "socket",
+    "threading",
+    "urllib",
+    "http",
+    "shutil",
+    "time",
+    "tempfile",
+    "asyncio",
+    "os",
+    "io",
+    "pathlib",
+    "glob",
+    "importlib",
+    "sys",
+}
+
+
+def _rule_violations(path):
+    """Imports of one rules.py that break the Dependency Rule, as readable strings."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    bad = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            if (
+                node.level
+            ):  # relative: inside bigdl, so only another rules module may be named
+                names = ["bigdl." + (node.module or "")]
+            elif node.module == "os.path":
+                continue
+            else:
+                names = [node.module or ""]
+        else:
+            continue
+        for name in names:
+            top = name.split(".")[0]
+            if top == "bigdl":
+                if not name.endswith("rules"):
+                    bad.append(
+                        name
+                    )  # a rule leaning on an adapter, a route or the config
+            elif top not in sys.stdlib_module_names or top in _RULE_IO:
+                bad.append(name)
+    return bad
+
+
+def test_architecture():
+    section("Architecture: rules depend on nothing outside")
+    # Clean Architecture's Dependency Rule, checked on every change rather than at review: a rules module may
+    # import the standard library (no I/O) and other rules modules, nothing else. No Flask, no yt-dlp, no
+    # requests, no subprocess, no config: that is what lets a rule be tested alone.
+    files = sorted((ROOT / "bigdl").rglob("rules.py"))
+    check(
+        "rules modules found",
+        len(files) >= 2,
+        ", ".join(str(f.relative_to(ROOT)) for f in files),
+    )
+    for f in files:
+        bad = _rule_violations(f)
+        check(
+            f"{f.relative_to(ROOT).as_posix()} imports nothing outside",
+            not bad,
+            ", ".join(bad),
+        )
+    # Control: the same scan on a module that does I/O must flag it, or the check above proves nothing.
+    flagged = _rule_violations(ROOT / "bigdl" / "cut" / "ffmpeg.py")
+    check(
+        "control: an adapter is flagged",
+        "subprocess" in flagged and "bigdl.config" in flagged,
+        flagged,
+    )
+
+
 def test_cut_progress_rule():
     section("Cut: the progress rule, on its own")
-    rule = app._cut_progress
+    rule = cut_rules._cut_progress
     # Lines that carry no time move nothing: the deadline must not be pushed by them.
     check("a non-progress line is ignored", rule("frame=12\n", -1, 10) is None)
     check(
@@ -1381,6 +1470,7 @@ OFFLINE = [
     test_cancel_route,
     test_instagram_cancellation,
     test_cut_cancellation,
+    test_architecture,
     test_cut_progress_rule,
     test_cut_stall_timeout,
     test_landing_page,

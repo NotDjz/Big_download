@@ -49,13 +49,14 @@ def _wait(port, timeout=25):
 def main():
     sys.path.insert(0, str(ROOT))
     import app  # noqa: E402  (the server is the subject of the test)
+    from bigdl import config  # noqa: E402  (port, flags and folders live there, not on app)
 
     # Without these guards, a BIG DL already running or a forgotten Chrome
     # would answer the wait, and the suite would test a different process than
     # it believes, reporting all green for code that was never loaded.
-    if _busy(app.PORT):
+    if _busy(config.PORT):
         print(
-            f"FAILED: port {app.PORT} is already taken. Close BIG DL before running the test."
+            f"FAILED: port {config.PORT} is already taken. Close BIG DL before running the test."
         )
         return 2
     if _busy(CDP_PORT):
@@ -63,10 +64,10 @@ def main():
         return 2
 
     threading.Thread(
-        target=lambda: app.app.run(host="127.0.0.1", port=app.PORT, threaded=True),
+        target=lambda: app.app.run(host="127.0.0.1", port=config.PORT, threaded=True),
         daemon=True,
     ).start()
-    if not _wait(app.PORT):
+    if not _wait(config.PORT):
         print("FAILED: the Flask server did not start")
         return 2
 
@@ -90,7 +91,7 @@ def main():
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        **app._SUBPROCESS_FLAGS,
+        **config._SUBPROCESS_FLAGS,
     )
     try:
         if not _wait(CDP_PORT):
@@ -99,7 +100,7 @@ def main():
         env = {
             **os.environ,
             "CDP_PORT": str(CDP_PORT),
-            "APP_URL": f"http://localhost:{app.PORT}",
+            "APP_URL": f"http://localhost:{config.PORT}",
         }
         try:
             return subprocess.call(
@@ -123,7 +124,7 @@ def main():
         # hundred MB in temp_uploads/ until the hourly sweep. No risk to work in
         # progress: this function refuses to start when the application's port
         # is already taken.
-        for leftover in app.TEMP_FOLDER.glob("*"):
+        for leftover in config.TEMP_FOLDER.glob("*"):
             if leftover.is_file():
                 try:
                     leftover.unlink()
