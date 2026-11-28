@@ -3,7 +3,9 @@
 # publishes for it (its registration catalog) BEFORE anything from it runs. `dotnet tool install` and
 # `wix extension add` would fetch whatever the feed serves at that version, unchecked.
 # Util is for util:CloseApplication in installer\bigdownloader.wxs.
-# Puts a `wix` command on PATH ($env:GITHUB_PATH in Actions) and fills WiX's extension cache.
+# Puts a `wix` command on PATH ($env:GITHUB_PATH in Actions) and fills WiX's extension cache. That cache is global,
+# whatever -ToolDir says: it replaces %USERPROFILE%\.wix\extensions\WixToolset.Util.wixext\7.0.1 with the verified
+# package, which is where `wix build -ext` looks for it.
 param([string]$ToolDir = (Join-Path ([IO.Path]::GetTempPath()) 'wix-7.0.1'))
 $ErrorActionPreference = 'Stop'
 

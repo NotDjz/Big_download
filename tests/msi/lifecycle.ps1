@@ -59,6 +59,7 @@ function Msi($verb, $msi, $log) {
     # checks report.
     Step "msiexec $verb $(Split-Path $msi -Leaf)"
     $p = Start-Process msiexec -ArgumentList $verb, "`"$msi`"", '/qn', '/norestart', '/l*v', "`"$Out\$log`"" -PassThru
+    $null = $p.Handle # cached now, or ExitCode can come back empty once msiexec has exited
     if (-not $p.WaitForExit(300000)) {
         $p.Kill($true)
         return 'timed out after 5 min'
@@ -83,10 +84,14 @@ function Serving {
     }
     $false
 }
-function Kept { $cut -and (Test-Path $cut) -and (Test-Path $cookies) }
+function Kept { $cut -and (Test-Path $cut -PathType Leaf) -and (Test-Path $cookies -PathType Leaf) }
 # msiexec exits 0 even when a file in use was moved to C:\Config.Msi for deletion at reboot (measured before the
 # installer closed the app itself): the log is the only place that says so.
-function RebootOps($log) { @(Select-String -Path "$Out\$log" -Encoding unicode -Pattern 'Must reboot' -SimpleMatch).Count }
+# A missing log answers -1, never 0: no log is no evidence. msiexec writes its /l*v log in UTF-16.
+function RebootOps($log) {
+    if (-not (Test-Path "$Out\$log")) { return -1 }
+    @(Select-String -Path "$Out\$log" -Encoding unicode -Pattern 'Must reboot' -SimpleMatch).Count
+}
 # Each BigDownloader process still alive, described enough to tell the onefile bootloader (parent of the other,
 # no window) from the app (window, port 5555).
 function Leftovers {
@@ -94,7 +99,8 @@ function Leftovers {
     $ports = @(Get-NetTCPConnection -LocalPort 5555 -State Listen -ErrorAction SilentlyContinue).OwningProcess
     foreach ($p in $all) {
         $proc = Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
-        $role = ($all.ProcessId -contains $p.ParentProcessId) ? 'child' : 'top'
+        $role = ($all.ProcessId -contains $p.ParentProcessId) ? 'child' :
+            ((Get-Process -Id $p.ParentProcessId -ErrorAction SilentlyContinue) ? 'top' : 'orphan')
         'pid {0} {1} parent {2} window {3} port5555 {4}' -f $p.ProcessId, $role, $p.ParentProcessId,
             ($proc.MainWindowHandle -ne 0), ($ports -contains $p.ProcessId)
     }
@@ -136,8 +142,12 @@ try {
     $stream = (Invoke-WebRequest "$base/cut-progress/$($job.cut_id)" -TimeoutSec 180).Content
     $final = ($stream -split "`n" | Where-Object { $_ -like 'data: *' } | Select-Object -Last 1) -replace '^data: ', '' | ConvertFrom-Json
     Check 'cut completes with the bundled FFmpeg' ($final.status -eq 'complete') ($final | ConvertTo-Json -Compress)
-    $cut = "$dir\downloads\Videos\$($final.filename)"
-    Check 'cut output in the library' ((Test-Path $cut) -and (Get-Item $cut).Length -gt 0) $cut
+    # Only a real output file stands for the user's data: with no filename the path would name the Videos folder,
+    # which exists anyway, and the "kept" checks would pass on nothing.
+    $file = "$dir\downloads\Videos\$($final.filename)"
+    $made = $final.status -eq 'complete' -and $final.filename -and (Test-Path $file -PathType Leaf)
+    if ($made) { $cut = $file }
+    Check 'cut output in the library' ($made -and (Get-Item $file).Length -gt 0) $file
 } catch {
     Check 'cut completes with the bundled FFmpeg' $false $_
 }
