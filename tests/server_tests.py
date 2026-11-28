@@ -1109,6 +1109,7 @@ def test_cut_bounds_rule():
         (5, 2),
         ("x", 2),
         (None, 2),
+        (False, True),  # float(True) is 1.0: a malformed body passed as the range 0-1 s
     ):
         result = bounds(start, end)
         check(
@@ -1116,6 +1117,20 @@ def test_cut_bounds_rule():
             result[0] is None and result[1],
             result,
         )
+    # Against the media's own length: a start past the end made FFmpeg write nothing.
+    check(
+        "a start past the media is refused",
+        bounds(20, 30, 10)[0] is None,
+        bounds(20, 30, 10),
+    )
+    check(
+        "an end past the media is clamped to it",
+        bounds(2, 30, 10) == ((2.0, 10.0), None),
+        bounds(2, 30, 10),
+    )
+    check(
+        "no known length: no clamp", bounds(2, 30) == ((2.0, 30.0), None), bounds(2, 30)
+    )
 
     fit = lib_rules.fit_stem
     long = "a" * 250
@@ -1234,11 +1249,87 @@ def test_cut_hardening():
             len(named),
         )
 
+        # A start past the media's end: refused here, since FFmpeg would have written nothing.
+        r = client.post(
+            "/cut-uploaded",
+            headers=H,
+            json={"temp_name": "abcd1234_clip.mp4", "start": 20, "end": 30},
+        )
+        check(
+            "a start past the media is a 400",
+            r.status_code == 400,
+            f"code={r.status_code}",
+        )
+
+        # The claim on a name outlives the progress stream: the client closing it (the SSE finally pops
+        # the entry) while FFmpeg had not created the file yet let the next cut take the same _v2.
+        started.clear()
+        client.post(
+            "/cut-uploaded",
+            headers=H,
+            json={
+                "temp_name": "abcd1234_clip.mp4",
+                "start": 0,
+                "end": 5,
+                "original_name": "other.mp4",
+            },
+        )
+        jobs.cut_progress.clear()
+        client.post(
+            "/cut-uploaded",
+            headers=H,
+            json={
+                "temp_name": "abcd1234_clip.mp4",
+                "start": 0,
+                "end": 5,
+                "original_name": "other.mp4",
+            },
+        )
+        check(
+            "a name stays claimed after the stream closes",
+            len(set(started)) == 2,
+            started,
+        )
+    cut_ffmpeg.claimed_outputs.clear()
+
     final, _, _ = _stall_run(_FFMPEG_NO_OUTPUT)
     check(
         "no output is reported as such, not as a missing FFmpeg",
         final.get("message") == "FFmpeg wrote no output",
         final,
+    )
+
+    # Through the real worker, with a source to lose: no output keeps it, and the bounds reach FFmpeg in
+    # fixed-point (it rejects str(1e-05) == "1e-05").
+    source = scratch / "keep.mp4"
+    source.write_bytes(b"z")
+    seen_cmd = []
+    real_popen = subprocess.Popen
+
+    def no_output_popen(cmd, **kw):
+        seen_cmd.extend(cmd)
+        return real_popen([sys.executable, "-c", _FFMPEG_NO_OUTPUT], **kw)
+
+    jobs.cut_progress["keep"] = {
+        "queue": queue.Queue(maxsize=100),
+        "cancelled": False,
+        "deadline": time.time() + 60,
+    }
+    cut_ffmpeg.claimed_outputs.add(scratch / "keep_v2.mp4")  # as the route claims it
+    with patched_on(subprocess, Popen=no_output_popen):
+        cut_ffmpeg._run_ffmpeg_cut(
+            "keep", source, scratch / "keep_v2.mp4", 0.00001, 2.5, source
+        )
+    check("no output keeps the upload", source.exists())
+    check(
+        "the worker releases its name when the cut ends",
+        scratch / "keep_v2.mp4" not in cut_ffmpeg.claimed_outputs,
+    )
+    times = [seen_cmd[i + 1] for i, a in enumerate(seen_cmd) if a in ("-ss", "-t")]
+    check(
+        "bounds reach FFmpeg in fixed-point",
+        times and not any("e" in t for t in times),
+        times,
     )
     jobs.cut_progress.clear()
     shutil.rmtree(scratch, ignore_errors=True)

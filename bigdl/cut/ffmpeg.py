@@ -16,6 +16,13 @@ from bigdl.config import (
 from bigdl.cut.rules import _cut_progress
 from bigdl.jobs import _kill_quietly, _put_final, _put_progress, cut_progress
 
+# Output paths claimed by cuts that have not finished, released by the worker
+# itself: kept in cut_progress, a claim went with the entry when the client
+# closed its progress stream, and the next cut took the same _v2 while FFmpeg
+# had not created the file yet. Taken and checked under claim_lock.
+claimed_outputs = set()
+claim_lock = threading.Lock()
+
 
 def _watch_cut(entry, proc, timed_out):
     """Kill FFmpeg once the cut's deadline passes, checked once a second.
@@ -50,7 +57,16 @@ def _pump_cut_progress(proc, entry, q, duration):
 
 
 def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=None):
-    """Run FFmpeg on a worker thread, reading progress off stderr."""
+    """Run one cut on its worker thread, then release its output name, however it ended."""
+    try:
+        _cut_with_ffmpeg(cut_id, input_path, out_path, start, duration, temp_cleanup)
+    finally:
+        with claim_lock:
+            claimed_outputs.discard(out_path)
+
+
+def _cut_with_ffmpeg(cut_id, input_path, out_path, start, duration, temp_cleanup):
+    """Run FFmpeg, reading progress off stderr."""
     entry = cut_progress.get(cut_id)
     if not entry:
         # The client disconnected before we started: the SSE stream's finally
@@ -61,15 +77,18 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
         return
     q = entry["queue"]
 
-    def fail(message, status="error"):
+    def fail(message, status="error", keep_source=False):
         """Leaving with nothing to show: one place to clean up.
 
         A cancellation keeps the source file. Stopping a cut is precisely what
         you do to redo it with different bounds: deleting the source answered
         404 "source file not found" when relaunching, and killed the preview on
-        the way. The hourly temp_uploads/ sweep takes care of it instead.
+        the way. The hourly temp_uploads/ sweep takes care of it instead. A cut
+        that wrote no output keeps it for the same reason: the bounds were at
+        fault, not the file.
         """
-        doomed = (out_path,) if status == "cancelled" else (out_path, temp_cleanup)
+        keep = status == "cancelled" or keep_source
+        doomed = (out_path,) if keep else (out_path, temp_cleanup)
         for path in doomed:
             if path:
                 try:
@@ -82,12 +101,13 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
         cmd = [
             FFMPEG_PATH,
             "-y",
+            # Fixed-point: str() writes 1e-05 for a tiny float, which FFmpeg's time parser rejects.
             "-ss",
-            str(start),
+            f"{start:.3f}",
             "-i",
             str(input_path),
             "-t",
-            str(duration),
+            f"{duration:.3f}",
             # About 7x faster than the default 'medium', measured on 1080p.
             "-preset",
             "veryfast",
@@ -147,7 +167,7 @@ def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=
         # FFmpeg can exit 0 having written nothing (a range past the end, after
         # seeking): stat() then raised FileNotFoundError, read as a missing FFmpeg.
         if not out_path.is_file():
-            fail("FFmpeg wrote no output")
+            fail("FFmpeg wrote no output", keep_source=True)
             return
 
         if temp_cleanup:

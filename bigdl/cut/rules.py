@@ -3,13 +3,17 @@
 import math
 
 
-def parse_cut_bounds(start, end):
+def parse_cut_bounds(start, end, media_duration=None):
     """Validate a cut's bounds from the client: ((start, end), None), or (None, the reason).
 
-    float() accepts "nan", "inf" and JSON's NaN/Infinity, and `end <= start` is
-    False whenever NaN is involved: such bounds reached FFmpeg, which failed,
-    and the error path deleted the user's upload.
+    float() accepts "nan", "inf", JSON's NaN/Infinity and booleans, and
+    `end <= start` is False whenever NaN is involved: such bounds reached
+    FFmpeg, which failed, and the error path deleted the user's upload. Given
+    the media's length, a start past it is refused (FFmpeg would write nothing)
+    and the end is clamped to it.
     """
+    if isinstance(start, bool) or isinstance(end, bool):
+        return None, "Times must be numbers"
     try:
         start, end = float(start), float(end)
     except (TypeError, ValueError):
@@ -20,6 +24,10 @@ def parse_cut_bounds(start, end):
         return None, "The start time cannot be negative"
     if end <= start:
         return None, "The end time must come after the start"
+    if media_duration:
+        if start >= media_duration:
+            return None, "The start time is past the end of the file"
+        end = min(end, media_duration)
     return (start, end), None
 
 

@@ -10,18 +10,18 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request, send_file
 
 from bigdl.config import CUT_TIMEOUT, MUSIC_FOLDER, TEMP_FOLDER, VIDEOS_FOLDER, log
-from bigdl.cut.ffmpeg import _get_media_duration, _run_ffmpeg_cut
+from bigdl.cut.ffmpeg import (
+    _get_media_duration,
+    _run_ffmpeg_cut,
+    claim_lock,
+    claimed_outputs,
+)
 from bigdl.cut.rules import parse_cut_bounds
 from bigdl.jobs import _sweep_old_files, cut_progress
 from bigdl.library.rules import fit_stem, sanitize_filename
 from bigdl.web import _sse_response
 
 bp = Blueprint("cut", __name__)
-
-
-# Held while a cut's output name is chosen and claimed in cut_progress: two cuts
-# started before FFmpeg had created either file both got stem_v2 and wrote to it.
-_naming_lock = threading.Lock()
 
 
 def _next_versioned_name(folder, stem, ext, claimed=()):
@@ -138,10 +138,6 @@ def cut_uploaded():
 
     if not temp_name or end is None:
         return jsonify({"error": "Missing parameters"}), 400
-    bounds, error = parse_cut_bounds(data.get("start", 0), end)
-    if error:
-        return jsonify({"error": error}), 400
-    start, end = bounds
 
     safe_temp = sanitize_filename(temp_name)
     temp_path = (TEMP_FOLDER / safe_temp).resolve()
@@ -149,6 +145,14 @@ def cut_uploaded():
         return jsonify({"error": "Access denied"}), 403
     if not temp_path.exists():
         return jsonify({"error": "Source file not found"}), 404
+
+    # Against the file's own length (0 when ffprobe cannot tell: no clamp then).
+    bounds, error = parse_cut_bounds(
+        data.get("start", 0), end, _get_media_duration(temp_path)
+    )
+    if error:
+        return jsonify({"error": error}), 400
+    start, end = bounds
 
     stem = Path(original_name).stem if original_name else temp_path.stem
     stem = sanitize_filename(stem)
@@ -158,15 +162,16 @@ def cut_uploaded():
     dest_folder = MUSIC_FOLDER if ext.lower() in audio_exts else VIDEOS_FOLDER
     cut_id = str(uuid.uuid4())[:8]
     duration = end - start
-    with _naming_lock:
-        claimed = {e.get("out") for e in cut_progress.values()}
-        out_path = dest_folder / _next_versioned_name(dest_folder, stem, ext, claimed)
-        cut_progress[cut_id] = {
-            "queue": queue.Queue(maxsize=200),
-            "deadline": time.time() + CUT_TIMEOUT,
-            "cancelled": False,
-            "out": out_path,  # claimed until the entry goes: FFmpeg creates the file later
-        }
+    with claim_lock:
+        out_path = dest_folder / _next_versioned_name(
+            dest_folder, stem, ext, claimed_outputs
+        )
+        claimed_outputs.add(out_path)  # released by the worker when the cut ends
+    cut_progress[cut_id] = {
+        "queue": queue.Queue(maxsize=200),
+        "deadline": time.time() + CUT_TIMEOUT,
+        "cancelled": False,
+    }
     thread = threading.Thread(
         target=_run_ffmpeg_cut,
         args=(cut_id, temp_path, out_path, start, duration, temp_path),
