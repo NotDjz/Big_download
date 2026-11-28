@@ -39,10 +39,15 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+import yt_dlp  # noqa: E402
+
 import app  # noqa: E402  (the server is the subject of the test)
 from bigdl import config, jobs, web  # noqa: E402  (the kernel app.py is built on)
 from bigdl.cut import ffmpeg as cut_ffmpeg  # noqa: E402
 from bigdl.cut import rules as cut_rules  # noqa: E402
+from bigdl.download import instagram, ytdlp  # noqa: E402
+from bigdl.download import routes as dl_routes  # noqa: E402
+from bigdl.download import rules as dl_rules  # noqa: E402
 
 ONLINE = "--online" in sys.argv
 # app.PORT is the single source of the port number across the whole project.
@@ -99,7 +104,7 @@ def patched(**replacements):
 
 
 def fake_ydl(cls):
-    return patched_on(app.yt_dlp, YoutubeDL=cls)
+    return patched_on(yt_dlp, YoutubeDL=cls)
 
 
 def fake_ydl_class(extract, journal=None):
@@ -252,7 +257,7 @@ def test_baseline_behaviour():
     for i in range(3):
         q.put_nowait({"status": "downloading", "n": i})
     try:
-        app._put_final(q, {"status": "complete", "filename": "ok.mp4"})
+        jobs._put_final(q, {"status": "complete", "filename": "ok.mp4"})
         drained = []
         while not q.empty():
             drained.append(q.get_nowait())
@@ -284,7 +289,7 @@ def test_baseline_behaviour():
     # merge_output_format and the MP4 converter are only set for
     # youtube/playlist: a bestvideo+bestaudio here would yield an unplayable
     # .mkv.
-    fs = app._get_format_string("social", 480)
+    fs = dl_rules._get_format_string("social", 480)
     check("quality honoured for social", "height<=480" in fs, fs[:56])
 
     # Without the generator's finally, a client disconnect left the entry and
@@ -298,7 +303,7 @@ def test_baseline_behaviour():
         {"status": "downloading", "percent": 1}
     )
     with app.app.test_request_context("/progress/zz", headers=H):
-        _, gen = first_frame(app.progress_stream("zz").response)
+        _, gen = first_frame(dl_routes.progress_stream("zz").response)
         gen.close()
     check("SSE leak on disconnect", "zz" not in app.download_progress, "entry removed")
 
@@ -314,13 +319,13 @@ def test_deadlines():
         "cancelled": False,
     }
     app.download_progress["pl"] = entry
-    hook = app._make_abort_hook(entry)
+    hook = ytdlp._make_abort_hook(entry)
 
     raised = False
     try:
         hook({})
-    except app.DownloadAborted as e:
-        raised = e.message == app.TIMEOUT_MSG
+    except jobs.DownloadAborted as e:
+        raised = e.message == config.TIMEOUT_MSG
     check("deadline passed: the hook raises", raised)
 
     # The playlist loop pushes it forward per video: a long playlist is a
@@ -342,7 +347,7 @@ def test_deadlines():
 
     entry["queue"].put_nowait({"status": "downloading", "percent": 50})
     with app.app.test_request_context("/progress/pl", headers=H):
-        frame, _ = first_frame(app.progress_stream("pl").response)
+        frame, _ = first_frame(dl_routes.progress_stream("pl").response)
     check(
         "the SSE follows the deadline, not start_time",
         "Timeout" not in frame,
@@ -350,8 +355,8 @@ def test_deadlines():
     )
     check(
         "message derived from the constant",
-        str(app.DOWNLOAD_TIMEOUT // 60) in app.TIMEOUT_MSG,
-        app.TIMEOUT_MSG,
+        str(app.DOWNLOAD_TIMEOUT // 60) in config.TIMEOUT_MSG,
+        config.TIMEOUT_MSG,
     )
 
 
@@ -374,7 +379,7 @@ def test_playlist_pushes_deadline():
         "cancelled": False,
     }
     with fake_ydl(fake_ydl_class(extract)):
-        app._run_playlist_download(entry["queue"], "http://x/pl", None, entry, set())
+        ytdlp._run_playlist_download(entry["queue"], "http://x/pl", None, entry, set())
     check(
         "registry deadline pushed forward",
         entry["deadline"] > time.time(),
@@ -384,7 +389,7 @@ def test_playlist_pushes_deadline():
     app.download_progress["pl2"] = entry
     entry["queue"].put_nowait({"status": "downloading", "percent": 10})
     with app.app.test_request_context("/progress/pl2", headers=H):
-        frame, _ = first_frame(app.progress_stream("pl2").response)
+        frame, _ = first_frame(dl_routes.progress_stream("pl2").response)
     check(
         "the SSE does not cut the client off",
         "Timeout" not in frame,
@@ -444,7 +449,7 @@ def test_routing():
         )
         check(
             "the enumeration is bounded",
-            any(o.get("playlistend") == app.PLAYLIST_SCAN for o in calls),
+            any(o.get("playlistend") == config.PLAYLIST_SCAN for o in calls),
             "playlistend=%s" % [o.get("playlistend") for o in calls],
         )
         check(
@@ -487,7 +492,7 @@ def test_routing():
     # carries weight. For youtube/playlist, start_download goes through
     # clean_youtube_url, which already strips the '&list='.
     for t in ("mp3", "youtube", "social"):
-        o = app._build_ydl_opts(
+        o = ytdlp._build_ydl_opts(
             t,
             RADIO,
             None,
@@ -499,20 +504,20 @@ def test_routing():
 
     check(
         "flat extractions: noplaylist absent",
-        "noplaylist" not in app._flat_ydl_opts(),
-        str(sorted(app._flat_ydl_opts())),
+        "noplaylist" not in ytdlp._flat_ydl_opts(),
+        str(sorted(ytdlp._flat_ydl_opts())),
     )
     # The download needs the WHOLE list: the bound must exist only where it is
     # asked for explicitly.
     check(
         "the flat options bound nothing",
-        "playlistend" not in app._flat_ydl_opts(),
+        "playlistend" not in ytdlp._flat_ydl_opts(),
         "the preview sets it, not the download",
     )
     check(
         "clean_youtube_url strips the list=",
-        "list=" not in app.clean_youtube_url(RADIO),
-        app.clean_youtube_url(RADIO),
+        "list=" not in dl_rules.clean_youtube_url(RADIO),
+        dl_rules.clean_youtube_url(RADIO),
     )
 
     r = client.post("/get-playlist-info", headers=H, json={})
@@ -597,7 +602,7 @@ def test_photo_strategy():
     # Instagram API with whatever cookies sit in BASE_DIR, and a success would
     # write into the real downloads/Photos/. The test was green by accident of
     # configuration.
-    with patched(_download_instagram_images=lambda *a, **k: None):
+    with patched_on(ytdlp, _download_instagram_images=lambda *a, **k: None):
         r = client.post(
             "/start-download",
             headers=H,
@@ -630,7 +635,7 @@ def test_photo_strategy():
     def fake_images(q, url, entry):
         seen["img"] = True
         seen["entry"] = entry
-        app._put_final(q, {"status": "complete", "title": "ok", "filename": "x.jpg"})
+        jobs._put_final(q, {"status": "complete", "title": "ok", "filename": "x.jpg"})
 
     q = queue.Queue(maxsize=100)
     now = time.time()
@@ -642,9 +647,9 @@ def test_photo_strategy():
     }
     with (
         fake_ydl(fake_ydl_class(refuse, journal=instantiations)),
-        patched(_download_instagram_images=fake_images),
+        patched_on(ytdlp, _download_instagram_images=fake_images),
     ):
-        app._run_download("t1", "https://www.instagram.com/p/ABC/", "photo")
+        ytdlp._run_download("t1", "https://www.instagram.com/p/ABC/", "photo")
 
     check(
         "yt-dlp not called at all",
@@ -705,11 +710,11 @@ def test_cancel_route():
         str(d),
     )
 
-    hook = app._make_abort_hook(app.download_progress["dl1"])
+    hook = ytdlp._make_abort_hook(app.download_progress["dl1"])
     raised = None
     try:
         hook({})
-    except app.DownloadAborted as e:
+    except jobs.DownloadAborted as e:
         raised = e.status
     # Assert on the published status, not on the class name: the status is
     # what the client sees, and it is what has to stay stable.
@@ -777,16 +782,17 @@ def _instagram_continue(cancel):
     photos.mkdir()
     raised = None
     try:
-        with patched(
+        with patched_on(
+            instagram,
             _get_cookies_file=lambda: str(cookies),
             PHOTOS_FOLDER=photos,
             _convert_to_jpg=lambda p: p,
             requests=fake_requests,
         ):
-            app._download_instagram_images(
+            instagram._download_instagram_images(
                 entry["queue"], "https://www.instagram.com/p/ABCDEFG/", entry
             )
-    except app.DownloadAborted as e:
+    except jobs.DownloadAborted as e:
         raised = e.status
     except Exception as e:
         raised = "AUTRE: %s" % type(e).__name__
@@ -997,7 +1003,7 @@ _RULE_IO = {
     "subprocess",
     "socket",
     "threading",
-    "urllib",
+    "urllib.request",  # the network; urllib.parse is pure text work and stays allowed
     "http",
     "shutil",
     "time",
@@ -1037,7 +1043,9 @@ def _rule_violations(path):
                     bad.append(
                         name
                     )  # a rule leaning on an adapter, a route or the config
-            elif top not in sys.stdlib_module_names or top in _RULE_IO:
+            elif top not in sys.stdlib_module_names or any(
+                name == io or name.startswith(io + ".") for io in _RULE_IO
+            ):
                 bad.append(name)
     return bad
 
@@ -1158,7 +1166,8 @@ def test_cut_stall_timeout():
 def test_radio_online():
     section("YouTube radio, for real")
     check(
-        "the radio URL is not seen as a playlist", app.is_playlist_url(RADIO) is False
+        "the radio URL is not seen as a playlist",
+        dl_rules.is_playlist_url(RADIO) is False,
     )
     t0 = time.time()
     r = client.post("/get-info", headers=H, json={"url": RADIO})
@@ -1207,9 +1216,9 @@ def test_real_cancellation():
             "deadline": now + app.DOWNLOAD_TIMEOUT,
             "cancelled": False,
         }
-        with patched(_get_output_folder=lambda t: home, WORK_FOLDER=travail):
+        with patched_on(ytdlp, _get_output_folder=lambda t: home, WORK_FOLDER=travail):
             t = threading.Thread(
-                target=app._run_download, args=(job, URL, "social", None), daemon=True
+                target=ytdlp._run_download, args=(job, URL, "social", None), daemon=True
             )
             t.start()
             # Wait until the transfer has really started: cancelling before a
