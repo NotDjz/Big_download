@@ -15,6 +15,9 @@ from bigdl.config import (
     VIDEOS_FOLDER,
 )
 from bigdl.library.rules import (
+    LEGACY_FOLDERS,
+    is_inside,
+    media_type,
     sanitize_filename,
 )
 
@@ -27,11 +30,9 @@ def _resolve_category_folder(category):
         "Videos": VIDEOS_FOLDER,
         "Music": MUSIC_FOLDER,
         "Photos": PHOTOS_FOLDER,
-        # Legacy (mapped to actual on-disk folders)
-        "YouTube": DOWNLOAD_FOLDER / "YouTube",
-        "YouTube_MP3": DOWNLOAD_FOLDER / "YouTube_MP3",
-        "Reseaux_Sociaux": DOWNLOAD_FOLDER / "Reseaux_Sociaux",
     }
+    # Legacy names map to their actual on-disk folders.
+    folder_map.update({name: DOWNLOAD_FOLDER / name for name in LEGACY_FOLDERS})
     return folder_map.get(category)
 
 
@@ -44,15 +45,22 @@ def delete_file(category, filename):
         return jsonify({"error": "Invalid category"}), 400
 
     file_path = (folder / safe_filename).resolve()
-    folder_path = folder.resolve()
-
-    if not str(file_path).startswith(str(folder_path)):
+    if not is_inside(str(file_path), str(folder.resolve())):
         return jsonify({"error": "Access denied"}), 403
 
-    if not file_path.exists():
+    if not file_path.is_file():
         return jsonify({"error": "File not found"}), 404
 
-    file_path.unlink()
+    try:
+        file_path.unlink()
+    except PermissionError:
+        # Windows refuses to delete an open file (the player, or another program):
+        # that was a raw 500 page the client could not read.
+        return jsonify({"error": "The file is in use; close it and try again"}), 409
+    except FileNotFoundError:  # removed by someone else since the check
+        return jsonify({"error": "File not found"}), 404
+    except OSError as e:
+        return jsonify({"error": f"Could not delete the file: {e.strerror or e}"}), 500
     return jsonify({"success": True, "message": f"Deleted: {safe_filename}"})
 
 
@@ -60,53 +68,41 @@ def delete_file(category, filename):
 def list_downloads():
     """List every downloaded file, with its category."""
     files = []
-    image_exts = (".jpg", ".jpeg", ".png", ".webp", ".gif")
-    audio_exts = (".mp3", ".m4a", ".wav", ".flac", ".ogg")
-    # Intermediate files are not media: they showed up as openable rows and
-    # the player failed on them.
-    partial_exts = (".part", ".ytdl", ".temp", ".tmp")
-
     folders = [
         (VIDEOS_FOLDER, "Videos"),
         (MUSIC_FOLDER, "Music"),
         (PHOTOS_FOLDER, "Photos"),
     ]
-    # Include legacy folders if they exist (use their real folder names as categories)
-    legacy_map = [
-        (DOWNLOAD_FOLDER / "YouTube", "YouTube"),
-        (DOWNLOAD_FOLDER / "YouTube_MP3", "YouTube_MP3"),
-        (DOWNLOAD_FOLDER / "Reseaux_Sociaux", "Reseaux_Sociaux"),
-    ]
-    for folder, category in legacy_map:
-        if folder.exists():
-            folders.append((folder, category))
+    # Legacy folders, when they exist, under their real names as categories.
+    folders += [(DOWNLOAD_FOLDER / name, name) for name in LEGACY_FOLDERS]
 
     seen_names = set()
     for folder, category in folders:
         if not folder.exists():
             continue
         for file in folder.iterdir():
-            if file.suffix.lower() in partial_exts:
-                continue
-            if file.is_file() and file.name not in seen_names:
-                seen_names.add(file.name)
+            kind = media_type(file.name)
+            if kind is None or file.name in seen_names:
+                continue  # partials, desktop.ini, Thumbs.db: not media
+            # A file can vanish between the directory read and its stat (deleted,
+            # or replaced by a download's final move): that took the whole
+            # listing down with a 500.
+            try:
+                if not file.is_file():
+                    continue
                 stat = file.stat()
-                ext = file.suffix.lower()
-                if ext in image_exts:
-                    media_type = "photo"
-                elif ext in audio_exts:
-                    media_type = "audio"
-                else:
-                    media_type = "video"
-                files.append(
-                    {
-                        "name": file.name,
-                        "size": stat.st_size,
-                        "category": category,
-                        "media_type": media_type,
-                        "timestamp": stat.st_mtime,
-                    }
-                )
+            except OSError:
+                continue
+            seen_names.add(file.name)
+            files.append(
+                {
+                    "name": file.name,
+                    "size": stat.st_size,
+                    "category": category,
+                    "media_type": kind,
+                    "timestamp": stat.st_mtime,
+                }
+            )
 
     files.sort(key=lambda f: f["timestamp"], reverse=True)
     return jsonify(files)
@@ -121,12 +117,10 @@ def stream_file(category, filename):
         return jsonify({"error": "Invalid category"}), 400
 
     file_path = (folder / safe_filename).resolve()
-    folder_path = folder.resolve()
-
-    if not str(file_path).startswith(str(folder_path)):
+    if not is_inside(str(file_path), str(folder.resolve())):
         return jsonify({"error": "Access denied"}), 403
 
-    if file_path.exists():
+    if file_path.is_file():
         return send_file(file_path)
     return jsonify({"error": "File not found"}), 404
 
@@ -141,7 +135,7 @@ def open_folder():
         elif platform.system() == "Darwin":
             subprocess.Popen(["open", folder])
         else:
-            subprocess.Popen(["xdg-open", str(folder)])
+            subprocess.Popen(["xdg-open", folder])
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -155,9 +149,9 @@ def open_file(category, filename):
     if not folder:
         return jsonify({"error": "Invalid category"}), 400
     file_path = (folder / safe_name).resolve()
-    if not str(file_path).startswith(str(folder.resolve())):
+    if not is_inside(str(file_path), str(folder.resolve())):
         return jsonify({"error": "Access denied"}), 403
-    if not file_path.exists():
+    if not file_path.is_file():
         return jsonify({"error": "File not found"}), 404
     try:
         if platform.system() == "Windows":

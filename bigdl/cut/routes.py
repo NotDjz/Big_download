@@ -18,7 +18,13 @@ from bigdl.cut.ffmpeg import (
 )
 from bigdl.cut.rules import parse_cut_bounds
 from bigdl.jobs import _sweep_old_files, cut_progress
-from bigdl.library.rules import fit_stem, sanitize_filename
+from bigdl.library.rules import (
+    AUDIO_EXTS,
+    VIDEO_EXTS,
+    fit_stem,
+    is_inside,
+    sanitize_filename,
+)
 from bigdl.web import _sse_response
 
 bp = Blueprint("cut", __name__)
@@ -72,18 +78,7 @@ def upload_for_cut():
         return jsonify({"error": "Empty filename"}), 400
 
     ext = Path(file.filename).suffix.lower()
-    if ext not in (
-        ".mp3",
-        ".mp4",
-        ".mkv",
-        ".webm",
-        ".m4a",
-        ".wav",
-        ".flac",
-        ".ogg",
-        ".avi",
-        ".mov",
-    ):
+    if ext not in AUDIO_EXTS + VIDEO_EXTS:
         return jsonify({"error": f"Unsupported format: {ext}"}), 400
 
     safe_name = sanitize_filename(file.filename)
@@ -125,7 +120,7 @@ def stream_temp(filename):
     """Serve an uploaded file back for the preview."""
     safe_name = sanitize_filename(filename)
     file_path = (TEMP_FOLDER / safe_name).resolve()
-    if not str(file_path).startswith(str(TEMP_FOLDER.resolve())):
+    if not is_inside(str(file_path), str(TEMP_FOLDER.resolve())):
         return jsonify({"error": "Access denied"}), 403
     if not file_path.exists():
         return jsonify({"error": "File not found"}), 404
@@ -148,7 +143,7 @@ def cut_uploaded():
 
     safe_temp = sanitize_filename(temp_name)
     temp_path = (TEMP_FOLDER / safe_temp).resolve()
-    if not str(temp_path).startswith(str(TEMP_FOLDER.resolve())):
+    if not is_inside(str(temp_path), str(TEMP_FOLDER.resolve())):
         return jsonify({"error": "Access denied"}), 403
     if not temp_path.exists():
         return jsonify({"error": "Source file not found"}), 404
@@ -166,8 +161,7 @@ def cut_uploaded():
     stem = sanitize_filename(stem)
     ext = temp_path.suffix
 
-    audio_exts = (".mp3", ".m4a", ".wav", ".flac", ".ogg")
-    dest_folder = MUSIC_FOLDER if ext.lower() in audio_exts else VIDEOS_FOLDER
+    dest_folder = MUSIC_FOLDER if ext.lower() in AUDIO_EXTS else VIDEOS_FOLDER
     cut_id = str(uuid.uuid4())[:8]
     duration = end - start
     with claim_lock:
