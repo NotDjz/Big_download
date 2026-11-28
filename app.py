@@ -1481,9 +1481,12 @@ def _cut_progress(line, last_us, duration):
 
     Returns None for a line that carries no time (another key, or N/A before the
     first frame). Otherwise (last_us, percent, advanced): the furthest time seen,
-    the percentage of `duration` (clamped to 100, 0 without a duration), and
+    its percentage of `duration` (at most 100.0, 0.0 without a duration), and
     whether this line moved past last_us. Only an advancing time counts as
-    progress: FFmpeg keeps reporting the same one while it is stuck.
+    progress: FFmpeg keeps reporting the same one while it is stuck. The
+    percentage follows the furthest time, so the bar never steps back, and a
+    negative time (AV_NOPTS_VALUE, before the first frame) never goes below the
+    caller's starting last_us of -1.
     """
     if not line.startswith("out_time_us="):
         return None
@@ -1491,8 +1494,9 @@ def _cut_progress(line, last_us, duration):
         us = int(line.split("=")[1].strip())
     except ValueError:
         return None
-    pct = min(us / 1_000_000 / duration, 1.0) if duration > 0 else 0
-    return max(us, last_us), round(pct * 100, 1), us > last_us
+    furthest = max(us, last_us)
+    pct = min(furthest / 1_000_000 / duration, 1.0) if duration > 0 else 0.0
+    return furthest, round(pct * 100, 1), us > last_us
 
 
 def _pump_cut_progress(proc, entry, q, duration):
