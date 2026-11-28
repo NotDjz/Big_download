@@ -84,6 +84,13 @@ function Serving {
     $false
 }
 function Kept { $cut -and (Test-Path $cut) -and (Test-Path $cookies) }
+# GitHub Actions kills what a step started when the step ends: an app launched by the start phase is gone by the
+# upgrade phase, which then tested an upgrade with nothing running (measured: 0 processes). Each phase that needs
+# the app open starts it itself, and checks it really runs before msiexec.
+function EnsureRunning($when) {
+    if ((Listeners) -eq 0) { Step "launch the app ($when)"; $null = Launch; $null = Serving }
+    Check "app running $when" ((Listeners) -eq 1) "$((Processes).Count) process(es)"
+}
 
 if (Runs install) {
 $code = Msi '/i' $Old 'install.log'
@@ -124,7 +131,7 @@ Set-Content $cookies "# Netscape HTTP Cookie File`n" -Encoding ascii
 }
 
 if (Runs upgrade) {
-Check 'app running before the upgrade' ((Listeners) -eq 1) "$((Processes).Count) process(es)"
+EnsureRunning 'before the upgrade'
 $code = Msi '/i' $New 'upgrade.log'
 Check 'upgrade with the app running exits 0 (no reboot)' ($code -eq 0) $code
 Start-Sleep -Seconds 10
@@ -140,6 +147,7 @@ Check 'upgraded app serves its page' (Serving)
 }
 
 if (Runs uninstall) {
+EnsureRunning 'before the uninstall'
 $code = Msi '/x' $New 'uninstall.log'
 Check 'uninstall while running exits 0' ($code -eq 0) $code
 Start-Sleep -Seconds 3
