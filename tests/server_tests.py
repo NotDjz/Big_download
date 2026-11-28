@@ -979,6 +979,54 @@ def _stall_run(script):
     return final, entry["deadline"] - started, elapsed
 
 
+def test_cut_progress_rule():
+    section("Cut: the progress rule, on its own")
+    rule = app._cut_progress
+    # Lines that carry no time move nothing: the deadline must not be pushed by them.
+    check("a non-progress line is ignored", rule("frame=12\n", -1, 10) is None)
+    check(
+        "N/A before the first frame is ignored",
+        rule("out_time_us=N/A\n", -1, 10) is None,
+    )
+
+    first = rule("out_time_us=5000000\n", -1, 10)
+    check("the first time seen advances", first == (5_000_000, 50.0, True), first)
+    same = rule("out_time_us=5000000\n", 5_000_000, 10)
+    # FFmpeg keeps reporting the same time while stuck: that must not count as progress.
+    check(
+        "the same time again does not advance", same == (5_000_000, 50.0, False), same
+    )
+    back = rule("out_time_us=4000000\n", 5_000_000, 10)
+    # The bar follows the furthest time: it used to step back from 50 % to 40 %.
+    check(
+        "an earlier time neither advances nor moves the bar back",
+        back == (5_000_000, 50.0, False),
+        back,
+    )
+
+    # Whole tuples, not over[1]: a None would raise and end the run instead of failing one check.
+    over = rule("out_time_us=12000000\n", -1, 10)
+    check("the percentage is clamped to 100", over == (12_000_000, 100.0, True), over)
+    # FFmpeg can write a negative time, AV_NOPTS_VALUE included, before the first frame: the
+    # bar read "-922337203685477.5%".
+    negative = rule("out_time_us=-9223372036854775807\n", -1, 10)
+    check(
+        "a negative time gives 0 %, not a negative bar",
+        negative is not None and negative[1] == 0.0,
+        negative,
+    )
+    zero = rule("out_time_us=3000000\n", -1, 0)
+    check(
+        "no duration gives 0.0 %, a float like every other path",
+        zero == (3_000_000, 0.0, True) and isinstance(zero[1], float),
+        zero,
+    )
+    rounded = rule("out_time_us=1234567\n", -1, 10)
+    check(
+        "the percentage is rounded to 0.1", rounded == (1_234_567, 12.3, True), rounded
+    )
+
+
 def test_cut_stall_timeout():
     section("Cut: the timeout catches a stall, not a long clip")
     # The bug: a fixed 10-minute wall clock killed every cut that took longer,
@@ -1332,6 +1380,7 @@ OFFLINE = [
     test_cancel_route,
     test_instagram_cancellation,
     test_cut_cancellation,
+    test_cut_progress_rule,
     test_cut_stall_timeout,
     test_landing_page,
 ]

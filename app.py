@@ -1476,26 +1476,43 @@ def _watch_cut(entry, proc, timed_out):
         time.sleep(1)
 
 
+def _cut_progress(line, last_us, duration):
+    """Read one line of FFmpeg's -progress output: the cut's progress rule, no I/O.
+
+    Returns None for a line that carries no time (another key, or N/A before the
+    first frame). Otherwise (last_us, percent, advanced): the furthest time seen,
+    its percentage of `duration` (at most 100.0, 0.0 without a duration), and
+    whether this line moved past last_us. Only an advancing time counts as
+    progress: FFmpeg keeps reporting the same one while it is stuck. The
+    percentage follows the furthest time, so the bar never steps back, and a
+    negative time (AV_NOPTS_VALUE, before the first frame) never goes below the
+    caller's starting last_us of -1.
+    """
+    if not line.startswith("out_time_us="):
+        return None
+    try:
+        us = int(line.split("=")[1].strip())
+    except ValueError:
+        return None
+    furthest = max(us, last_us)
+    pct = min(furthest / 1_000_000 / duration, 1.0) if duration > 0 else 0.0
+    return furthest, round(pct * 100, 1), us > last_us
+
+
 def _pump_cut_progress(proc, entry, q, duration):
-    """Relay FFmpeg's out_time_us= lines as progress, pushing the deadline."""
+    """Relay FFmpeg's progress lines, pushing the deadline when the cut advances."""
     last_us = -1
     for line in proc.stderr:
-        if not line.startswith("out_time_us="):
+        progress = _cut_progress(line, last_us, duration)
+        if progress is None:
             continue
-        try:
-            us = int(line.split("=")[1].strip())
-        except ValueError:  # FFmpeg writes N/A before the first frame
-            continue
-        # Only an advancing timestamp counts: FFmpeg keeps reporting the same
-        # one while it is stuck.
-        if us > last_us:
-            last_us = us
+        last_us, percent, advanced = progress
+        if advanced:
             entry["deadline"] = time.time() + CUT_TIMEOUT
-        pct = min(us / 1_000_000 / duration, 1.0) if duration > 0 else 0
         # put_nowait: removing the entry in the finally orphans the queue as
         # soon as the client leaves, and a blocking put then froze the worker
         # (stderr no longer drained, cleanup never done) until the process died.
-        _put_progress(q, {"status": "progress", "percent": round(pct * 100, 1)})
+        _put_progress(q, {"status": "progress", "percent": percent})
 
 
 def _run_ffmpeg_cut(cut_id, input_path, out_path, start, duration, temp_cleanup=None):
