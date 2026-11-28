@@ -103,7 +103,7 @@ def progress_stream(download_id):
     )
 
 
-# ==================== COMMUN ====================
+# ==================== COMMON ====================
 @bp.route("/get-info", methods=["POST"])
 def get_video_info():
     """Metadata for one URL, plus the formats it can be downloaded in."""
@@ -169,7 +169,7 @@ def get_video_info():
         elif height >= 480:
             quality = "480p"
         else:
-            quality = f"{height}p" if height > 0 else "Inconnue"
+            quality = f"{height}p" if height > 0 else "Unknown"
 
         # Collect the available qualities
         formats = info.get("formats", [])

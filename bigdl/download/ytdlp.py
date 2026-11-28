@@ -418,21 +418,21 @@ def _playlist_info(url):
     if info is None:
         raise ValueError("Could not extract the playlist information")
 
-    enumerees = len([e for e in info.get("entries", []) if e])
+    enumerated = len([e for e in info.get("entries", []) if e])
 
     return {
         "success": True,
         "is_playlist": True,
         "platform": "youtube",
         "title": info.get("title", "Playlist"),
-        "uploader": info.get("uploader", "Inconnu"),
+        "uploader": info.get("uploader", "Unknown"),
         # playlist_count comes from the page and does not depend on the
         # bound: a playlist of 1593 videos still announces 1593 even though only
         # PLAYLIST_SCAN of them were enumerated. The length is only a fallback
         # for when that field is missing, and that fallback IS capped by the
         # bound, hence the flag: announcing "50" for a playlist of 3000 would be
         # a silent lie.
-        "video_count": info.get("playlist_count") or enumerees,
+        "video_count": info.get("playlist_count") or enumerated,
         "video_count_partial": not info.get("playlist_count")
-        and enumerees >= PLAYLIST_SCAN,
+        and enumerated >= PLAYLIST_SCAN,
     }
