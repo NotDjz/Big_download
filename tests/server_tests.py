@@ -601,8 +601,11 @@ def test_photo_strategy():
     # Without this patch the route starts a real thread that calls the
     # Instagram API with whatever cookies sit in BASE_DIR, and a success would
     # write into the real downloads/Photos/. The test was green by accident of
-    # configuration.
-    with patched_on(ytdlp, _download_instagram_images=lambda *a, **k: None):
+    # configuration. The route's own worker is replaced, not what it calls: the
+    # thread's target is bound when the route creates it, inside this block, so
+    # a thread scheduled after the block ends still runs the no-op. Patching
+    # _download_instagram_images instead let a late thread read the real one.
+    with patched_on(dl_routes, _run_download=lambda *a, **k: None):
         r = client.post(
             "/start-download",
             headers=H,
@@ -997,13 +1000,12 @@ def _stall_run(script):
 
 
 # Standard-library modules a rule may not use either: they reach a process, the disk, the network, a thread, the
-# clock, the interpreter or another module by name. `os` is among them: `from os.path import ...` is the one way in,
-# since it brings path arithmetic without os.remove or os.system.
+# clock, the interpreter or another module by name.
 _RULE_IO = {
     "subprocess",
     "socket",
     "threading",
-    "urllib.request",  # the network; urllib.parse is pure text work and stays allowed
+    "urllib",
     "http",
     "shutil",
     "time",
@@ -1016,36 +1018,39 @@ _RULE_IO = {
     "importlib",
     "sys",
 }
+# The pure corners of two of them: path arithmetic and URL parsing, no os.remove, no urlopen.
+_RULE_PURE = {"os.path", "urllib.parse"}
 
 
-def _rule_violations(path):
+def _rule_violations(path, source=None):
     """Imports of one rules.py that break the Dependency Rule, as readable strings."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = ast.parse(source if source is not None else path.read_text(encoding="utf-8"))
     bad = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.level:
+            # relative: inside bigdl, so only another rules module may be named
+            names = ["bigdl." + (node.module or "")]
         elif isinstance(node, ast.ImportFrom):
-            if (
-                node.level
-            ):  # relative: inside bigdl, so only another rules module may be named
-                names = ["bigdl." + (node.module or "")]
-            elif node.module == "os.path":
-                continue
-            else:
-                names = [node.module or ""]
+            # `from urllib import request` names urllib.request, not urllib
+            names = (
+                [f"{node.module}.{a.name}" for a in node.names]
+                if node.module in _RULE_IO
+                else [node.module]
+            )
         else:
             continue
         for name in names:
             top = name.split(".")[0]
+            if any(name == ok or name.startswith(ok + ".") for ok in _RULE_PURE):
+                continue
             if top == "bigdl":
                 if not name.endswith("rules"):
                     bad.append(
                         name
                     )  # a rule leaning on an adapter, a route or the config
-            elif top not in sys.stdlib_module_names or any(
-                name == io or name.startswith(io + ".") for io in _RULE_IO
-            ):
+            elif top not in sys.stdlib_module_names or top in _RULE_IO:
                 bad.append(name)
     return bad
 
@@ -1073,6 +1078,17 @@ def test_architecture():
     check(
         "control: an adapter is flagged",
         "subprocess" in flagged and "bigdl.config" in flagged,
+        flagged,
+    )
+    # Control: the network through every spelling of urllib is refused, its pure parse module is not.
+    spellings = (
+        "import urllib\nfrom urllib import request\nimport urllib.request\n"
+        "from urllib.parse import urlparse\nfrom urllib import parse\nimport os\nfrom os.path import splitext\n"
+    )
+    flagged = _rule_violations(None, spellings)
+    check(
+        "control: urllib and os are refused, their pure parts are not",
+        flagged == ["urllib", "urllib.request", "urllib.request", "os"],
         flagged,
     )
 
