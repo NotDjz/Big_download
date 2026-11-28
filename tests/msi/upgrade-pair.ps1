@@ -9,5 +9,5 @@ if (-not $msi) { throw 'No dist\BigDownloader-*-x64.msi: run build-msi.ps1 first
 $version = $msi.Name -replace '^BigDownloader-(.+)-x64\.msi$', '$1'
 New-Item -ItemType Directory -Force $Out | Out-Null
 Copy-Item $msi.FullName (Join-Path $Out 'old.msi')
-wix build installer\bigdownloader.wxs -arch x64 -d Version=$version -o (Join-Path $Out 'new.msi')
+wix build installer\bigdownloader.wxs -arch x64 -ext WixToolset.Util.wixext -d Version=$version -o (Join-Path $Out 'new.msi')
 exit $LASTEXITCODE

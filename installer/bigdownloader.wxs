@@ -1,16 +1,31 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <!-- Id derives a stable UpgradeCode: never change it, or a newer MSI installs beside the old one
        instead of replacing it. Per user, because the app writes downloads\, temp_uploads\ and
        cookies.txt beside its exe: Program Files would be read-only for it. -->
   <Package Id="NotDjz.BigDownloader" Name="Big Downloader" Manufacturer="NotDjz"
            Version="$(var.Version)" Scope="perUser">
-    <MajorUpgrade AllowSameVersionUpgrades="yes"
+    <!-- afterInstallInitialize: the old version is removed inside the transaction, after CloseApplication below has
+         closed the running app, instead of before anything could close it. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" Schedule="afterInstallInitialize"
                   DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <MediaTemplate EmbedCab="yes" />
-    <!-- Restart Manager closes a running Big Downloader before replacing or removing its files, then relaunches what
-         registered for restart: measured in CI (tests/msi/lifecycle.ps1), the app came back, window and port 5555,
-         right after being uninstalled. Closing is wanted; relaunching is not. -->
+
+    <!-- A running Big Downloader is two processes (PyInstaller onefile: a windowless bootloader, and the app it
+         unpacked). Restart Manager handles that badly. Measured in CI (tests/msi/lifecycle.ps1), with the app open:
+         after an upgrade the bootloader, or the old app itself, kept running and held the old exe, which msiexec
+         moved to C:\Config.Msi for deletion at reboot; after an uninstall Restart Manager relaunched the app.
+         So the installer closes it itself: a close message, 5 s, then whatever is left is terminated, before any
+         file is replaced or removed. It targets by name, so a portable BigDownloader.exe running elsewhere during
+         an install is closed too. -->
     <Property Id="MSIDISABLERMRESTART" Value="1" />
+    <util:CloseApplication Id="CloseBigDownloader" Target="BigDownloader.exe" CloseMessage="yes"
+                           RebootPrompt="no" TerminateProcess="1" Timeout="5" />
+    <!-- Its default slot is before InstallFiles: after RemoveFiles on an uninstall, and after the old product is gone
+         on an upgrade. Moved to the start of the transaction. -->
+    <InstallExecuteSequence>
+      <Custom Action="override Wix4CloseApplications_X64" Before="RemoveExistingProducts" />
+    </InstallExecuteSequence>
 
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="ProgramsFolder" Name="Programs">

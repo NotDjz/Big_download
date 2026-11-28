@@ -20,6 +20,6 @@ if (Test-Path dist\BigDownloader.exe) { throw 'dist\BigDownloader.exe is in use:
 cmd /c ".\build.bat < nul"
 if (-not (Test-Path dist\BigDownloader.exe)) { throw 'build.bat did not produce dist\BigDownloader.exe' }
 
-wix build installer\bigdownloader.wxs -arch x64 -d Version=$Version -o "dist\BigDownloader-$Version-x64.msi"
+wix build installer\bigdownloader.wxs -arch x64 -ext WixToolset.Util.wixext -d Version=$Version -o "dist\BigDownloader-$Version-x64.msi"
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 "dist\BigDownloader-$Version-x64.msi"
