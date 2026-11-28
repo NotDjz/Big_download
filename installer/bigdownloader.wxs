@@ -1,12 +1,34 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <!-- Id derives a stable UpgradeCode: never change it, or a newer MSI installs beside the old one
        instead of replacing it. Per user, because the app writes downloads\, temp_uploads\ and
        cookies.txt beside its exe: Program Files would be read-only for it. -->
   <Package Id="NotDjz.BigDownloader" Name="Big Downloader" Manufacturer="NotDjz"
            Version="$(var.Version)" Scope="perUser">
+    <!-- Default schedule (afterInstallValidate): the old version is removed by its own uninstall sequence, which closes
+         the app itself once installed versions carry the CloseApplication below. Inside the transaction instead,
+         RemoveExistingProducts must be its first script action (error 2613, measured), so nothing could close the
+         app before it. -->
     <MajorUpgrade AllowSameVersionUpgrades="yes"
                   DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
     <MediaTemplate EmbedCab="yes" />
+
+    <!-- A running Big Downloader is two processes (PyInstaller onefile: a windowless bootloader, and the app it
+         unpacked). Restart Manager handles that badly. Measured in CI (tests/msi/lifecycle.ps1), with the app open:
+         after an upgrade the bootloader, or the old app itself, kept running and held the old exe, which msiexec
+         moved to C:\Config.Msi for deletion at reboot; after an uninstall Restart Manager relaunched the app.
+         So the installer closes it itself: a close message, 5 s, then whatever is left is terminated, before any
+         file is replaced or removed. It targets by name, so it only runs when an installed copy exists (update,
+         repair, uninstall): a first install never touches a portable BigDownloader.exe running elsewhere. -->
+    <Property Id="MSIDISABLERMRESTART" Value="1" />
+    <util:CloseApplication Id="CloseBigDownloader" Target="BigDownloader.exe" CloseMessage="yes"
+                           RebootPrompt="no" TerminateProcess="1" Timeout="5"
+                           Condition="Installed OR WIX_UPGRADE_DETECTED" />
+    <!-- Its default slot is before InstallFiles, which on an uninstall comes after RemoveFiles: too late. Moved to the
+         start of the transaction, before any file is removed or written. -->
+    <InstallExecuteSequence>
+      <Custom Action="override Wix4CloseApplications_X64" After="InstallInitialize" />
+    </InstallExecuteSequence>
 
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="ProgramsFolder" Name="Programs">

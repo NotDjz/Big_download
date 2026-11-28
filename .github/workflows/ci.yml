@@ -70,6 +70,58 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - run: python tests/run_ui_smoke.py
 
+  # The installer's whole life on a disposable runner (thrown away after): install, a real cut through the installed
+  # app, upgrade with the app running, relaunch, uninstall while running. Per user, so no admin is involved.
+  msi:
+    name: msi
+    runs-on: windows-latest
+    # Above the sum of the step budgets (build ~5 min, lifecycle 41 min worst case), so a phase's own timeout fires
+    # first and names the phase.
+    timeout-minutes: 55
+    env:
+      PYTHON: python # build.bat: the interpreter setup-python installed, not whatever `py` finds
+      LIFE: ${{ github.workspace }}\lifecycle
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: python -m pip install --require-hashes -r requirements.txt
+      - run: python download_ffmpeg.py
+      - run: ./scripts/install-wix.ps1
+      - run: ./build-msi.ps1 -Version 0.0.1
+      # A second build of the same version has a new package code: installed over the first, it is an upgrade.
+      - run: ./tests/msi/upgrade-pair.ps1 -Out $env:RUNNER_TEMP
+      - run: |
+          ./ffmpeg.exe -v error -f lavfi -i testsrc=size=640x360:rate=30 -f lavfi -i sine -t 3 -c:v libx264 -preset ultrafast -c:a aac -shortest "$env:RUNNER_TEMP\sample.mp4"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      # One step per phase, each shorter than the job and longer than the script's own waits inside it (msiexec is
+      # bounded at 5 min there), so a hang is reported by the script as a failed check rather than cut short.
+      - name: lifecycle install
+        timeout-minutes: 8
+        run: ./tests/msi/lifecycle.ps1 -Phase install -Old "$env:RUNNER_TEMP\old.msi" -New "$env:RUNNER_TEMP\new.msi" -Out $env:LIFE
+      - name: lifecycle start and cut
+        timeout-minutes: 8
+        run: ./tests/msi/lifecycle.ps1 -Phase start -Old "$env:RUNNER_TEMP\old.msi" -New "$env:RUNNER_TEMP\new.msi" -Sample "$env:RUNNER_TEMP\sample.mp4" -Out $env:LIFE
+      - name: lifecycle upgrade with the app running
+        timeout-minutes: 9
+        run: ./tests/msi/lifecycle.ps1 -Phase upgrade -Old "$env:RUNNER_TEMP\old.msi" -New "$env:RUNNER_TEMP\new.msi" -Out $env:LIFE
+      - name: lifecycle relaunch
+        timeout-minutes: 4
+        run: ./tests/msi/lifecycle.ps1 -Phase relaunch -Old "$env:RUNNER_TEMP\old.msi" -New "$env:RUNNER_TEMP\new.msi" -Out $env:LIFE
+      - name: lifecycle uninstall while running
+        timeout-minutes: 9
+        run: ./tests/msi/lifecycle.ps1 -Phase uninstall -Old "$env:RUNNER_TEMP\old.msi" -New "$env:RUNNER_TEMP\new.msi" -Out $env:LIFE
+      - name: lifecycle report
+        timeout-minutes: 2
+        run: ./tests/msi/lifecycle.ps1 -Phase report -Old "$env:RUNNER_TEMP\old.msi" -New "$env:RUNNER_TEMP\new.msi" -Out $env:LIFE
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msi-lifecycle
+          path: ${{ env.LIFE }}
+          if-no-files-found: ignore
+
   audit:
     name: audit
     runs-on: windows-latest

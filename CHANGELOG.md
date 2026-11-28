@@ -3,6 +3,18 @@
 Each version's section is its release notes: the release workflow publishes it as-is.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions: [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- Installing an update or uninstalling while Big Downloader was open left part of it running: after an update the
+  old version kept running and its file was only deleted at the next restart, and after an uninstall the app
+  started again. The installer now closes Big Downloader before it touches any file. Updating from 2.3.1 itself
+  still goes through 2.3.1's own uninstaller, so close the app first for that one update.
+
+### Changed
+- Every change and every release now installs the MSI on a clean Windows machine and checks its whole life: a cut
+  with the installed app, an update and an uninstall with the app open, downloads and cookies kept.
+
 ## [2.3.1] - 2026-11-28
 
 ### Fixed

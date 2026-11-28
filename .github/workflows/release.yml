@@ -41,7 +41,7 @@ jobs:
   build:
     needs: gate
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     permissions:
       contents: read
       id-token: write # provenance signing (OIDC), this job only
@@ -72,6 +72,24 @@ jobs:
       # WiX checked against nuget.org's published SHA-512 before use.
       - run: ./scripts/install-wix.ps1
       - run: ./build-msi.ps1 -Version ${{ steps.version.outputs.version }}
+      # The MSI about to be published is installed, used for a cut, then upgraded over with the app open, on this
+      # disposable runner; the relaunch and the uninstall run on its same-version rebuild. ci.yml runs the same
+      # script phase by phase on every change.
+      - run: |
+          ./tests/msi/upgrade-pair.ps1 -Out $env:RUNNER_TEMP
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./ffmpeg.exe -v error -f lavfi -i testsrc=size=640x360:rate=30 -f lavfi -i sine -t 3 -c:v libx264 -preset ultrafast -c:a aac -shortest "$env:RUNNER_TEMP\sample.mp4"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: MSI lifecycle
+        timeout-minutes: 45
+        run: ./tests/msi/lifecycle.ps1 -Phase all -Old "$env:RUNNER_TEMP\old.msi" -New "$env:RUNNER_TEMP\new.msi" -Sample "$env:RUNNER_TEMP\sample.mp4" -Out "$env:RUNNER_TEMP\lifecycle"
+      # The msiexec logs explain a failure; they go with the runner otherwise.
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msi-lifecycle
+          path: ${{ runner.temp }}/lifecycle
+          if-no-files-found: ignore
       - env:
           MSI: ${{ steps.version.outputs.msi }}
         run: |
