@@ -84,6 +84,18 @@ function Serving {
     $false
 }
 function Kept { $cut -and (Test-Path $cut) -and (Test-Path $cookies) }
+# Each BigDownloader process still alive, described enough to tell the onefile bootloader (parent of the other,
+# no window) from the app (window, port 5555).
+function Leftovers {
+    $all = @(Get-CimInstance Win32_Process -Filter "Name = 'BigDownloader.exe'")
+    $ports = @(Get-NetTCPConnection -LocalPort 5555 -State Listen -ErrorAction SilentlyContinue).OwningProcess
+    foreach ($p in $all) {
+        $proc = Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue
+        $role = ($all.ProcessId -contains $p.ParentProcessId) ? 'child' : 'top'
+        'pid {0} {1} parent {2} window {3} port5555 {4}' -f $p.ProcessId, $role, $p.ParentProcessId,
+            ($proc.MainWindowHandle -ne 0), ($ports -contains $p.ProcessId)
+    }
+}
 # GitHub Actions kills what a step started when the step ends: an app launched by the start phase is gone by the
 # upgrade phase, which then tested an upgrade with nothing running (measured: 0 processes). Each phase that needs
 # the app open starts it itself, and checks it really runs before msiexec.
@@ -136,6 +148,10 @@ $code = Msi '/i' $New 'upgrade.log'
 Check 'upgrade with the app running exits 0 (no reboot)' ($code -eq 0) $code
 Start-Sleep -Seconds 10
 Check 'never two servers after the upgrade' ((Listeners) -le 1) (Listeners)
+$t = [Diagnostics.Stopwatch]::StartNew()
+while ((Processes).Count -gt 0 -and $t.Elapsed.TotalSeconds -lt 30) { Start-Sleep -Milliseconds 250 }
+$left = @(Leftovers)
+Check 'the old app is gone after the upgrade' ($left.Count -eq 0) ($left ? ($left -join ' | ') : ('{0:N1} s' -f $t.Elapsed.TotalSeconds))
 Check 'one product registered after the upgrade' ((Products) -eq 1) (Products)
 Check 'exe present after the upgrade' (Test-Path $exe)
 Check 'downloads and cookies kept by the upgrade' (Kept)
@@ -154,7 +170,7 @@ Check 'uninstall while running exits 0' ($code -eq 0) $code
 # outlive msiexec by a moment (measured: one still there 3 s after). Waited for, timed, and named if it stays.
 $t = [Diagnostics.Stopwatch]::StartNew()
 while ((Processes).Count -gt 0 -and $t.Elapsed.TotalSeconds -lt 30) { Start-Sleep -Milliseconds 250 }
-$left = @(Get-CimInstance Win32_Process -Filter "Name = 'BigDownloader.exe'" | ForEach-Object { "$($_.ProcessId) $($_.CommandLine)" })
+$left = @(Leftovers)
 Check 'nothing left running within 30 s' ($left.Count -eq 0) ($left ? ($left -join ' | ') : ('{0:N1} s' -f $t.Elapsed.TotalSeconds))
 Check 'exe removed' (-not (Test-Path $exe))
 Check 'shortcut removed' (-not (Test-Path $shortcut))
